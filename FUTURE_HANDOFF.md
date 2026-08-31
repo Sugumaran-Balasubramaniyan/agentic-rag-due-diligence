@@ -29,6 +29,6 @@
 
 ## Task 2 checkpoint
 
-- Implemented typed Pydantic contracts, deterministic Asteria Systems SAS synthetic Markdown/CSV generation, manifest hashes/byte lengths, literal provenance validation, 13 benchmark questions, and the module CLI.
-- Controller evidence after fix round 1: `make verify` passed with 13 backend tests overall; pinned pre-commit hooks passed via `uvx`; `npm audit` reported zero vulnerabilities across 334 dependencies; byte-identical canonical regeneration passed; `git diff --check`, clean status, and the secret scan passed.
+- Implemented typed Pydantic contracts, deterministic Asteria Systems SAS synthetic Markdown/CSV generation, manifest hashes/byte lengths, literal provenance validation, 14 benchmark questions, and the module CLI.
+- Controller evidence after fix round 1: `make verify` passed with 13 backend tests overall; the worker's direct pre-commit executable was unavailable, but the controller independently ran `uvx --from pre-commit==4.3.0 pre-commit run --all-files` successfully; `npm audit` reported zero vulnerabilities across 334 dependencies; byte-identical canonical regeneration passed; `git diff --check`, clean status, and the secret scan passed.
 - Task 2 is accepted through head `5c5ce5f` after fix round 1.
