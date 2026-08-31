@@ -3,9 +3,18 @@
 ## Current checkpoint
 
 - Repository initialized from the approved flagship plan.
-- No feature task has been accepted yet.
+- Task 1 is accepted through head `80eee7f` after two fix rounds and
+  independent review.
+- Fresh controller evidence: `make verify` passed; pre-commit all-files
+  passed; `npm audit` reported zero vulnerabilities across 334 dependencies;
+  `git diff --check` and the secret-pattern scan passed; the worktree was
+  clean.
+- Next task: Task 2, deterministic synthetic data room.
 - Publishing is blocked until the unrelated embedded Git credential identified during preflight is revoked and its remote is sanitized.
 - Task rule: each independently reviewed task is a checkpoint; after acceptance, the controller pushes it after fresh verification.
+- Checkpoint pushes use a newly created credential-free remote and a GitHub CLI
+  token distinct from the unrelated embedded credential. Release cleanup still
+  requires revoking and sanitizing that unrelated credential.
 
 ## Resume protocol
 
@@ -14,4 +23,5 @@
 3. Confirm `git status --short` and `git log --oneline -10` agree with the ledger.
 4. Resume the first task without a `Task N: complete` ledger entry.
 5. Never repeat an accepted task solely because conversation context was compacted.
-
+6. After review, push the accepted checkpoint through the newly created
+   credential-free remote using the distinct GitHub CLI token.
