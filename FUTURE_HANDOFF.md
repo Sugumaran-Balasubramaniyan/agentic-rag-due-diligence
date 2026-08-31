@@ -5,6 +5,7 @@
 - Repository initialized from the approved flagship plan.
 - No feature task has been accepted yet.
 - Publishing is blocked until the unrelated embedded Git credential identified during preflight is revoked and its remote is sanitized.
+- Task rule: each independently reviewed task is a checkpoint; after acceptance, the controller pushes it after fresh verification.
 
 ## Resume protocol
 
