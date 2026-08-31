@@ -25,3 +25,9 @@
 5. Never repeat an accepted task solely because conversation context was compacted.
 6. After review, push the accepted checkpoint through the newly created
    credential-free remote using the distinct GitHub CLI token.
+
+## Task 2 checkpoint
+
+- Implemented typed Pydantic contracts, deterministic Asteria Systems SAS synthetic Markdown/CSV generation, manifest hashes/byte lengths, literal provenance validation, 13 benchmark questions, and the module CLI.
+- Fresh verification after implementation: `make verify` passed; backend has 9 tests passing, ruff and mypy are clean, and frontend checks/build remain green.
+- Task 2 implementation is pending independent review; the controller will mark it accepted after review.
