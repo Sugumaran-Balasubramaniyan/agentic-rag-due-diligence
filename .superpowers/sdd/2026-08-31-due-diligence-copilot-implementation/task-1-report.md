@@ -183,3 +183,61 @@ npm audit --omit=dev --json -> vulnerabilities total 0
 Remaining concern: `npm ci` still reports two development-tree advisories (one high and one critical) plus deprecation warnings; production-only audit is clean.
 
 Fix implementation commit: `7209a5d fix: harden Task 1 verification contracts`.
+
+
+## Fix Round 2
+
+Addressed the verified re-review findings. The CI runner is now `ubuntu-24.04`; ADR 0003 documents that Actions and language runtimes remain full-version/SHA pinned while GitHub controls patching of the hosted image. The CI workflow retains full action SHA pins, Python 3.12.3, Node 22.22.2, and runs `uv sync --locked` and `npm ci` before `make verify`.
+
+Baseline audit captured before the dependency change:
+
+```text
+npm audit --json
+metadata.vulnerabilities.high = 1
+metadata.vulnerabilities.critical = 1
+metadata.vulnerabilities.total = 2
+Direct findings: Vite high, Vitest critical
+exit=1
+```
+
+Only the direct dev dependencies requested by review were changed, with exact pins: Vite `7.3.6` and Vitest `3.2.7`. The lockfile was regenerated with the targeted npm install; the resulting transitive changes are the Vite/Vitest dependency closure. `npm ci` installed the patched versions, confirmed by `node -p` output `7.3.6` and `3.2.7`.
+
+Post-update complete-tree audit:
+
+```text
+npm audit --json
+metadata.vulnerabilities.info = 0
+metadata.vulnerabilities.low = 0
+metadata.vulnerabilities.moderate = 0
+metadata.vulnerabilities.high = 0
+metadata.vulnerabilities.critical = 0
+metadata.vulnerabilities.total = 0
+exit=0
+```
+
+Focused frontend evidence:
+
+```text
+npm test -- --run src/App.test.tsx
+RUN v3.2.7
+Test Files 1 passed; Tests 1 passed; exit=0
+npm run build
+vite v7.3.6 building client environment for production
+74 modules transformed; exit=0
+```
+
+Full local gates:
+
+```text
+make verify -> exit=0; backend lint/type/test and frontend lint/type/test/build passed
+uvx --from pre-commit==4.3.0 pre-commit run --all-files -> ruff passed, ruff format passed, prettier passed; exit=0
+git diff --check -> exit=0
+common credential/private-key scan -> no matches
+npm audit --json -> zero vulnerabilities across 334 dependencies; exit=0
+```
+
+Fresh-clone proof used the committed tree `45cd9f4`: `mktemp` clone, assertions that `backend/.venv` and `frontend/node_modules` were absent, `uv sync --locked`, `npm ci`, and `make verify`. It exited 0; the clone reported Vitest 3.2.7, Vite 7.3.6, one frontend test passed, and the production build passed.
+
+Self-review: exact direct dependency pins are present in both `package.json` and the lockfile; no blind force fix or unrelated direct dependency upgrade was used; the mutable `ubuntu-latest` alias is gone; pre-commit configuration validates and runs cleanly. Remaining install output contains only upstream deprecation warnings for transitive packages; the complete audit is clean.
+
+Fix implementation commit: `45cd9f4 fix: pin CI runner and patched frontend tools`.
