@@ -4,5 +4,11 @@
   background: #f4f7f8;
 }
 
-body { margin: 0; }
-main { max-width: 60rem; margin: 0 auto; padding: 4rem 1.5rem; }
+body {
+  margin: 0;
+}
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 4rem 1.5rem;
+}
