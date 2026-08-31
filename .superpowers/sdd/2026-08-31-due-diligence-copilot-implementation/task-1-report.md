@@ -149,3 +149,37 @@ Fresh final result: exit 0.
 ## Commit
 
 Implementation commit: `dfb79f7 feat: bootstrap executable project contracts`.
+
+
+## Fix Round 1
+
+Addressed the independent review findings. CI now runs `uv sync --locked` in `backend/` and `npm ci` in `frontend/` before `make verify`. Actions are pinned to official full SHAs with release comments: checkout v4.2.2 (`11bd71901bbe5b1630ceea73d27597364c9af683`), setup-python v5.6.0 (`a26af69be951a213d495a4c3e4e4022e16d87065`), setup-uv v6.3.1 (`bd01e18f51369d5a26f1651c3cb451d3417e3bba`), and setup-node v4.4.0 (`49933ea5288caeca8642d1e84afbd3f7d6820020`). Runtime selectors are pinned to Python 3.12.3 and Node 22.22.2.
+
+Pre-commit was corrected so `rev` is repository-level and Prettier is scoped to `frontend/`. Exact validation commands and evidence:
+
+```text
+uvx --from pre-commit==4.3.0 pre-commit validate-config
+exit=0
+uvx --from pre-commit==4.3.0 pre-commit run --all-files
+ruff (legacy alias) ... Passed
+ruff format ... Passed
+prettier ... Passed
+exit=0
+```
+
+The frontend TDD cycle was restarted honestly. After removing `frontend/src/App.tsx`, the exact command `npm test -- --run src/App.test.tsx` failed with Vitest import analysis: `Error: Failed to resolve import "./App" from "src/App.test.tsx"`, `Test Files no tests`, `exit=1`. Reimplementing the minimal App from the unchanged smoke test and rerunning the same command produced `Test Files 1 passed (1)`, `Tests 1 passed (1)`, `exit=0`.
+
+Fresh verification on the committed fix (`7209a5d`) used a new `mktemp` clone with no existing `backend/.venv` or `frontend/node_modules`, then ran `uv sync --locked`, `npm ci`, and `make verify`. The corrected command exited 0; the full clone matrix reported backend lint/type/test green, frontend lint/type/test/build green, and the frontend test count was 1 passed. The first probe incorrectly ran `uv sync` from `/tmp` and exited 2 before testing the project; it was discarded and not treated as project evidence.
+
+Additional fix-round gates:
+
+```text
+make verify -> exit=0
+git diff --check -> exit=0
+common credential/private-key scan -> no matches
+npm audit --omit=dev --json -> vulnerabilities total 0
+```
+
+Remaining concern: `npm ci` still reports two development-tree advisories (one high and one critical) plus deprecation warnings; production-only audit is clean.
+
+Fix implementation commit: `7209a5d fix: harden Task 1 verification contracts`.
