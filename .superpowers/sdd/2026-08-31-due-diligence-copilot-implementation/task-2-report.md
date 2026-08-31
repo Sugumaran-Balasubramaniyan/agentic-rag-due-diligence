@@ -68,3 +68,39 @@ The implementation is bounded to typed contracts, deterministic data generation,
 ## Concerns
 
 Task 2 is pending the independent review checkpoint required by the controller. Future ingestion must preserve the manifest path, document IDs, CSV cell coordinates, and literal validation contract.
+
+## Fix round 1 evidence
+
+Independent review findings were reproduced with tests before implementation:
+
+- The new AnalysisState test initially failed during collection because AnalysisState was not defined.
+- The deal-risk test failed with StopIteration because no genuinely cross-document benchmark existed.
+- The nonexistent-section test failed because validation ignored section metadata.
+- The canonical drift test failed on the stale request-list fixture after the required source heading change.
+
+GREEN focused result after implementation and refactor:
+
+```text
+$ cd backend && uv run pytest tests/test_synthetic_data.py -q
+............                                                             [100%]
+exit_code=0
+```
+
+The canonical generator now reports 7 documents and 14 benchmark questions. The deal-risk question cites both revenue-by-customer and major-customer-contract. Section validation requires an exact Markdown `##` heading. The canonical drift test compares relative file sets and exact bytes.
+
+## Fix round 1 verification
+
+- `make verify`: passed; backend ruff clean, mypy clean across 7 source files, 13 backend tests passed, frontend lint/type/test/build passed.
+- Two fresh CLI outputs and the canonical fixture tree: `diff -r` passed with exit code 0.
+- `npm audit --audit-level=high`: found 0 vulnerabilities.
+- `git diff --check`: passed.
+- Secret-pattern scan over changed files: passed with no matches.
+- `pre-commit run --all-files`: attempted, but the environment has no `pre-commit` executable and returned exit code 127.
+
+## Fix round 1 refactor
+
+The implementation is now split into `synthetic_templates.py` for source bytes and coordinate builders, `synthetic_benchmarks.py` for benchmark construction, `synthetic_validation.py` for safe paths and source validation, and `synthetic_data.py` for orchestration, serialization, and CLI. The existing module CLI imports remain compatible.
+
+## Fix round 1 concerns
+
+The handoff remains pending independent review. The pre-commit executable is unavailable in this environment; equivalent repository lint, type, test, build, whitespace, audit, secret, and byte-drift gates passed.

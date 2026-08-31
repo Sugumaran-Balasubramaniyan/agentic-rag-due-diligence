@@ -141,6 +141,16 @@ class AgentEvent(ContractModel):
     summary: str = Field(min_length=1)
 
 
+class AnalysisState(ContractModel):
+    analysis_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    question: str = Field(min_length=1)
+    status: AnalysisStatus
+    events: tuple[AgentEvent, ...] = ()
+    findings: tuple[Finding, ...] = ()
+    report_id: str | None = None
+
+
 class ExpectedEvidence(ContractModel):
     literal: str = Field(min_length=1)
     source_location: SourceLocation

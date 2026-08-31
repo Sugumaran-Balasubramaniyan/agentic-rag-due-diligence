@@ -1,6 +1,8 @@
 # Document Request List
 > SYNTHETIC DATA ROOM: All entities and data in this data room are synthetic.
 
+## Requests
+
 | Request | Status | Notes |
 | --- | --- | --- |
 | SOC 2 Type II report | Outstanding | SOC 2 Type II report: outstanding; management has not provided this document. |

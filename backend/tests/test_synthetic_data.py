@@ -7,10 +7,15 @@ from pathlib import Path
 import pytest
 
 from due_diligence_copilot.domain import (
+    AgentEvent,
+    AnalysisState,
     AnalysisStatus,
     DocumentType,
     Evidence,
+    Finding,
+    FindingSeverity,
     SourceLocation,
+    VerificationStatus,
 )
 from due_diligence_copilot.synthetic_data import (
     CANONICAL_DATA_ROOM,
@@ -84,6 +89,7 @@ def test_generator_emits_required_documents_and_literal_ground_truth(
         "document-request-list.md",
     ]
     assert len(manifest.benchmark_questions) >= 12
+    assert manifest.documents[0].display_name == "Asteria Systems SAS Financial Summary"
     assert (output / "manifest.json").is_file()
     assert validate_manifest(manifest, output) == []
 
@@ -188,3 +194,88 @@ def test_cli_generates_canonical_shape(tmp_path: Path) -> None:
 
 def test_canonical_path_is_repo_relative() -> None:
     assert CANONICAL_DATA_ROOM.as_posix() == "data/synthetic/asteria-data-room"
+
+
+def test_analysis_state_serializes_stable_nested_contracts() -> None:
+    state = AnalysisState(
+        analysis_id="analysis-001",
+        workspace_id="workspace-001",
+        question="What is FY2025 revenue?",
+        status=AnalysisStatus.RUNNING,
+        events=(
+            AgentEvent(
+                sequence=1,
+                node="retrieve",
+                status="completed",
+                duration_ms=12,
+                summary="Retrieved redacted evidence.",
+            ),
+        ),
+        findings=(
+            Finding(
+                id="finding-001",
+                category="financial",
+                severity=FindingSeverity.LOW,
+                claim="Revenue is documented.",
+                confidence=1.0,
+                verification_status=VerificationStatus.VERIFIED,
+            ),
+        ),
+    )
+
+    payload = state.model_dump(mode="json")
+    assert payload["analysis_id"] == "analysis-001"
+    assert payload["status"] == "running"
+    assert payload["events"][0]["sequence"] == 1
+    assert payload["findings"][0]["verification_status"] == "verified"
+    assert payload["report_id"] is None
+
+
+def test_cross_document_deal_risk_cites_two_document_ids(tmp_path: Path) -> None:
+    manifest = generate_data_room(tmp_path / "room")
+    question = next(
+        item for item in manifest.benchmark_questions if item.id == "deal-risk"
+    )
+
+    assert question.category.value == "cross_document"
+    assert {
+        evidence.source_location.document_id for evidence in question.expected_evidence
+    } == {"revenue-by-customer", "major-customer-contract"}
+
+
+def test_manifest_validation_rejects_nonexistent_markdown_section(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "room"
+    manifest = generate_data_room(output)
+    first = manifest.benchmark_questions[0]
+    first.expected_evidence[0].source_location = SourceLocation(
+        document_id="financial-summary",
+        path="financial-summary.md",
+        section="No such heading",
+        line_start=8,
+        line_end=8,
+    )
+
+    errors = validate_manifest(manifest, output)
+
+    assert any("section does not exist" in error for error in errors)
+
+
+def test_canonical_fixtures_have_no_drift(tmp_path: Path) -> None:
+    generated = tmp_path / "fresh-room"
+    generate_data_room(generated)
+    canonical = Path(__file__).resolve().parents[2] / CANONICAL_DATA_ROOM
+
+    generated_files = sorted(
+        path.relative_to(generated) for path in generated.rglob("*")
+    )
+    canonical_files = sorted(
+        path.relative_to(canonical) for path in canonical.rglob("*")
+    )
+
+    assert generated_files == canonical_files
+    for relative_path in generated_files:
+        assert (generated / relative_path).read_bytes() == (
+            canonical / relative_path
+        ).read_bytes()
