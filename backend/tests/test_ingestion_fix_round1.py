@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from typing import Any
 
 import pytest
@@ -23,6 +24,7 @@ from due_diligence_copilot.ingestion_errors import (
     TransientIngestionFailure,
 )
 from due_diligence_copilot.ingestion_service import IngestionService
+from due_diligence_copilot.parsers import MarkdownDocumentParser
 from due_diligence_copilot.workspace import validate_workspace_id
 
 AUTHORIZED = AccessContext(
@@ -397,3 +399,176 @@ def test_service_rejects_faulty_parser_provenance_without_retry() -> None:
     assert job.failure_classification == "permanent"
     assert object_store.keys() == ()
     assert index.list("workspace-a") == ()
+
+
+class PersistThenRaiseDocumentRepository(InMemoryDocumentRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.deleted = 0
+        self._raised = False
+
+    def save(self, workspace_id: str, document: DocumentRecord) -> None:
+        super().save(workspace_id, document)
+        if not self._raised:
+            self._raised = True
+            raise RuntimeError("repository write details must not be logged")
+
+    def delete(self, workspace_id: str, document_id: str) -> None:
+        self.deleted += 1
+        self._documents.pop((workspace_id, document_id), None)
+
+
+def test_persist_then_raise_removes_stale_commit_marker_before_retry() -> None:
+    repository = PersistThenRaiseDocumentRepository()
+    object_store = InMemoryObjectStore()
+    index = InMemoryChunkIndex()
+    service = IngestionService(object_store, repository, index)
+
+    job = service.ingest(AUTHORIZED, document())
+
+    assert job.status == IngestionStatus.SUCCEEDED
+    assert job.attempts == 2
+    assert repository.deleted == 1
+    assert repository.get("workspace-a", job.document_id or "") is not None
+
+
+def test_dedupe_repairs_a_contiguous_but_incomplete_chunk_set() -> None:
+    repository = InMemoryDocumentRepository()
+    object_store = InMemoryObjectStore()
+    index = InMemoryChunkIndex()
+    content = document()
+    document_id = "document-partial"
+    parsed = MarkdownDocumentParser().parse(content, document_id)
+    expected_chunks = chunk_blocks(parsed, workspace_id="workspace-a")
+    repository.save(
+        "workspace-a",
+        DocumentRecord(
+            id=document_id,
+            display_name="notes",
+            document_type=DocumentType.FINANCIAL_SUMMARY,
+            path=content.filename,
+            media_type=content.media_type,
+            sha256=__import__("hashlib").sha256(content.content).hexdigest(),
+            byte_length=len(content.content),
+        ),
+    )
+    object_store.put("workspace-a", document_id, content.content, content.media_type)
+    index.store("workspace-a", expected_chunks[:1])
+    service = IngestionService(object_store, repository, index)
+
+    job = service.ingest(AUTHORIZED, content)
+
+    assert job.deduplicated is False
+    repaired = tuple(
+        chunk for chunk in index.list("workspace-a") if chunk.document_id == document_id
+    )
+    assert repaired == expected_chunks
+
+
+class WrongDocumentIdentityParser:
+    def parse(
+        self, document: UploadDocument, document_id: str
+    ) -> tuple[NormalizedBlock, ...]:
+        del document_id
+        wrong_id = "parser-selected-document"
+        return (
+            NormalizedBlock(
+                id="wrong-block",
+                document_id=wrong_id,
+                ordinal=0,
+                text="fact",
+                block_type="markdown_line",
+                source_location=SourceLocation(
+                    document_id=wrong_id,
+                    path=document.filename,
+                    line_start=1,
+                ),
+            ),
+        )
+
+
+def test_parser_cannot_select_a_different_document_identity() -> None:
+    object_store = InMemoryObjectStore()
+    repository = InMemoryDocumentRepository()
+    index = InMemoryChunkIndex()
+    service = IngestionService(
+        object_store,
+        repository,
+        index,
+        parser=WrongDocumentIdentityParser(),
+    )
+
+    job = service.ingest(AUTHORIZED, document())
+
+    assert job.status == IngestionStatus.FAILED
+    assert job.attempts == 1
+    assert job.failure_classification == "permanent"
+    assert object_store.keys() == ()
+    assert index.list("workspace-a") == ()
+    assert repository.find_by_sha256("workspace-a", job.sha256 or "") is None
+
+
+class BarrierParser:
+    def __init__(self) -> None:
+        self.entered = Event()
+        self.release = Event()
+        self.delegate = MarkdownDocumentParser()
+
+    def parse(
+        self, document: UploadDocument, document_id: str
+    ) -> tuple[NormalizedBlock, ...]:
+        self.entered.set()
+        if not self.release.wait(timeout=2):
+            raise RuntimeError("barrier timed out")
+        return self.delegate.parse(document, document_id)
+
+
+class CountingDocumentRepository(InMemoryDocumentRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.saves = 0
+
+    def save(self, workspace_id: str, document: DocumentRecord) -> None:
+        self.saves += 1
+        super().save(workspace_id, document)
+
+
+class CountingChunkIndex(InMemoryChunkIndex):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stores = 0
+
+    def store(self, workspace_id: str, chunks: tuple[Any, ...]) -> None:
+        self.stores += 1
+        super().store(workspace_id, chunks)
+
+
+def test_concurrent_identical_submitters_coalesce_to_one_terminal_job() -> None:
+    parser = BarrierParser()
+    object_store = CountingObjectStore()
+    repository = CountingDocumentRepository()
+    index = CountingChunkIndex()
+    service = IngestionService(object_store, repository, index, parser=parser)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(service.ingest, AUTHORIZED, document())
+        assert parser.entered.wait(timeout=2)
+        second = executor.submit(service.ingest, AUTHORIZED, document())
+        parser.release.set()
+        jobs = [first.result(timeout=3), second.result(timeout=3)]
+
+    assert [job.status for job in jobs] == [
+        IngestionStatus.SUCCEEDED,
+        IngestionStatus.SUCCEEDED,
+    ]
+    assert jobs[0] == jobs[1]
+    assert object_store.puts == 1
+    assert index.stores == 1
+    assert repository.saves == 1
+    events = service.events(AUTHORIZED, jobs[0].id)
+    assert len(events) == 3
+    assert [event.status for event in events] == [
+        IngestionStatus.QUEUED,
+        IngestionStatus.RUNNING,
+        IngestionStatus.SUCCEEDED,
+    ]

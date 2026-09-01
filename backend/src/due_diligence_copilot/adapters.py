@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import re
 from io import BytesIO
-from threading import Lock
+from threading import Condition
 
 from .domain import DocumentRecord, DocumentType
-from .ingestion_contracts import Chunk, IngestionEvent, IngestionJob
+from .ingestion_contracts import (
+    Chunk,
+    IngestionEvent,
+    IngestionJob,
+    IngestionStatus,
+)
 from .ports import (
     IngestionEventStore,
     JobRepository,
@@ -53,6 +58,10 @@ class InMemoryDocumentRepository:
     def save(self, workspace_id: str, document: DocumentRecord) -> None:
         validate_workspace_id(workspace_id)
         self._documents[(workspace_id, document.id)] = document
+
+    def delete(self, workspace_id: str, document_id: str) -> None:
+        validate_workspace_id(workspace_id)
+        self._documents.pop((workspace_id, document_id), None)
 
     def get(self, workspace_id: str, document_id: str) -> DocumentRecord | None:
         validate_workspace_id(workspace_id)
@@ -110,7 +119,7 @@ class InMemoryIngestionEventStore(IngestionEventStore, JobRepository):
     def __init__(self) -> None:
         self._jobs: dict[tuple[str, str], IngestionJob] = {}
         self._events: dict[tuple[str, str], list[IngestionEvent]] = {}
-        self._job_lock = Lock()
+        self._job_lock = Condition()
 
     def create_if_absent(self, job: IngestionJob) -> tuple[IngestionJob, bool]:
         validate_workspace_id(job.workspace_id)
@@ -126,11 +135,28 @@ class InMemoryIngestionEventStore(IngestionEventStore, JobRepository):
         validate_workspace_id(job.workspace_id)
         with self._job_lock:
             self._jobs[(job.workspace_id, job.id)] = job
+            self._job_lock.notify_all()
 
     def save_event(self, event: IngestionEvent) -> None:
         validate_workspace_id(event.workspace_id)
         key = (event.workspace_id, event.job_id)
         self._events.setdefault(key, []).append(event)
+
+    def wait_for_terminal(self, workspace_id: str, job_id: str) -> IngestionJob:
+        validate_workspace_id(workspace_id)
+        key = (workspace_id, job_id)
+        with self._job_lock:
+            if key not in self._jobs and any(
+                existing_id == job_id for _, existing_id in self._jobs
+            ):
+                raise PermissionError("job belongs to another workspace")
+            if key not in self._jobs:
+                raise PermissionError("job is not available in this workspace")
+            self._job_lock.wait_for(
+                lambda: self._jobs[key].status
+                in {IngestionStatus.SUCCEEDED, IngestionStatus.FAILED}
+            )
+            return self._jobs[key]
 
     def get_job(self, workspace_id: str, job_id: str) -> IngestionJob | None:
         validate_workspace_id(workspace_id)
@@ -237,6 +263,13 @@ class PostgresDocumentRepository:
                 document.sha256,
                 document.byte_length,
             ),
+        )
+
+    def delete(self, workspace_id: str, document_id: str) -> None:
+        validate_workspace_id(workspace_id)
+        self._connection.execute(
+            f"DELETE FROM {self._table} WHERE workspace_id = %s AND id = %s",
+            (workspace_id, document_id),
         )
 
     def get(self, workspace_id: str, document_id: str) -> DocumentRecord | None:

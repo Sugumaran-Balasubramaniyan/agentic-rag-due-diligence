@@ -97,3 +97,37 @@
 
 - External MinIO/PostgreSQL services remain intentionally unstarted; injected typed boundaries are tested. PostgreSQL migrations remain Task 6.
 - Task 3 remains pending independent review; this report does not mark it accepted.
+
+## Fix Round 2 evidence
+
+### Implementation
+
+- Added scoped `DocumentRepository.delete` behavior to the port, in-memory repository, and parameterized PostgreSQL adapter. Compensation now removes the document commit marker before chunks and objects, including when `save` persists and then raises.
+- Dedupe integrity now deterministically reparses the committed object with its recorded source metadata and requires the complete stored chunk tuple to equal the expected tuple. A contiguous subset cannot be treated as committed.
+- Parser output must use the exact `document_id` requested by the service before chunk construction or any storage write; self-consistent parser-selected identities fail permanently with redacted events.
+- Added atomic in-memory coalescing with condition notification. An existing queued/running identical job waits for its terminal transition without polling, while succeeded/failed jobs return immediately. Only the creator performs object/index/document writes and emits lifecycle events.
+
+### RED tests
+
+- `test_persist_then_raise_removes_stale_commit_marker_before_retry` — RED because repository `deleted` remained `0` after a save persisted then raised.
+- `test_dedupe_repairs_a_contiguous_but_incomplete_chunk_set` — RED because a one-chunk contiguous subset returned `deduplicated=True`.
+- `test_parser_cannot_select_a_different_document_identity` — RED because a parser-selected document identity incorrectly produced a succeeded job.
+- `test_concurrent_identical_submitters_coalesce_to_one_terminal_job` — RED because the barrier-controlled second caller received `RUNNING` rather than the creator's terminal result.
+- RED command: `PYTHONDONTWRITEBYTECODE=1 uv run pytest tests/test_ingestion_fix_round1.py -q` — 4 failed, 11 passed with the four reasons above.
+
+### GREEN and exact verification
+
+- Bounded GREEN: `timeout 30s env PYTHONDONTWRITEBYTECODE=1 uv run pytest tests/test_ingestion_fix_round1.py -q` — 15 passed, exit 0.
+- Required focused GREEN: `PYTHONDONTWRITEBYTECODE=1 uv run pytest tests/test_ingestion.py tests/test_ingestion_full.py tests/test_ingestion_canonical.py tests/test_ingestion_boundaries.py tests/test_postgres_adapter_reads.py tests/test_ingestion_fix_round1.py -q` — 46 passed.
+- `make verify` — passed: Ruff, strict mypy, 59 backend tests, frontend ESLint, TypeScript check, 1 frontend test, and Vite production build.
+- `uvx --from pre-commit==4.3.0 pre-commit run --all-files` — passed: Ruff, Ruff format, and Prettier.
+- `npm audit` — passed: found 0 vulnerabilities.
+- `git diff --check` — passed.
+- Bounded filename-only secret scan of the four changed implementation/test files — passed with no matches.
+
+### Fix Round 2 self-review and concerns
+
+- Scope remains Task 3 only. No API, Celery, retrieval, embeddings, migrations, or agent behavior was added. The SQL identifier expression remains exactly `^[A-Za-z_][A-Za-z0-9_]{0,62}$`.
+- The in-memory coalescing implementation uses condition notification rather than polling. The test command has an external 30-second deadlock guard; later persistent adapters must provide equivalent terminal notification semantics.
+- External MinIO/PostgreSQL services remain intentionally unstarted; PostgreSQL migrations remain Task 6.
+- Task 3 remains pending independent review and was not pushed.

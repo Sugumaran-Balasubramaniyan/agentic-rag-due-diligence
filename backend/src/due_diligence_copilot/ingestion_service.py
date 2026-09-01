@@ -10,6 +10,7 @@ from .chunking import chunk_blocks
 from .domain import DocumentRecord
 from .ingestion_contracts import (
     AccessContext,
+    Chunk,
     IngestionEvent,
     IngestionFailureClassification,
     IngestionJob,
@@ -174,6 +175,10 @@ class IngestionService:
     def _cleanup(self, workspace_id: str, document_id: str) -> bool:
         clean = True
         try:
+            self._documents.delete(workspace_id, document_id)
+        except Exception:
+            clean = False
+        try:
             self._chunks.delete(workspace_id, document_id)
         except Exception:
             clean = False
@@ -183,7 +188,25 @@ class IngestionService:
             clean = False
         return clean
 
-    def _is_committed(self, workspace_id: str, document: DocumentRecord) -> bool:
+    def _parse_and_chunk(
+        self, document: UploadDocument, document_id: str
+    ) -> tuple[Chunk, ...]:
+        blocks = self._parser.parse(document, document_id)
+        if any(block.document_id != document_id for block in blocks):
+            raise PermanentIngestionFailure(
+                "parser returned an unexpected document identity"
+            )
+        try:
+            return chunk_blocks(blocks, workspace_id=document.workspace_id)
+        except ValueError as exc:
+            raise PermanentIngestionFailure("parser provenance is invalid") from exc
+
+    def _is_committed(
+        self,
+        workspace_id: str,
+        document: DocumentRecord,
+        source_document: UploadDocument,
+    ) -> bool:
         try:
             content = self._object_store.get(workspace_id, document.id)
             if (
@@ -202,14 +225,15 @@ class IngestionService:
             range(len(chunks))
         ):
             return False
-        return all(
-            chunk.workspace_id == workspace_id
-            and chunk.source_location.document_id == document.id
-            and chunk.source_location.path == document.path
-            and hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
-            == chunk.content_hash
-            for chunk in chunks
+        expected_document = source_document.model_copy(
+            update={
+                "filename": document.path,
+                "media_type": document.media_type,
+                "document_type": document.document_type,
+            }
         )
+        expected_chunks = self._parse_and_chunk(expected_document, document.id)
+        return chunks == expected_chunks
 
     def ingest(self, context: AccessContext, document: UploadDocument) -> IngestionJob:
         require_workspace_access(context, document.workspace_id)
@@ -222,7 +246,7 @@ class IngestionService:
         )
         job, created = self._jobs.create_if_absent(initial_job)
         if not created:
-            return job
+            return self._jobs.wait_for_terminal(job.workspace_id, job.id)
 
         self._event(job, status=IngestionStatus.QUEUED, summary="Ingestion job queued")
         job = job.model_copy(update={"status": IngestionStatus.RUNNING})
@@ -245,11 +269,12 @@ class IngestionService:
         for attempt in range(1, self._max_attempts + 1):
             object_started = False
             chunks_started = False
+            record_started = False
             committed = False
             try:
                 existing = self._documents.find_by_sha256(document.workspace_id, sha256)
                 if existing is not None:
-                    if self._is_committed(document.workspace_id, existing):
+                    if self._is_committed(document.workspace_id, existing, document):
                         job = job.model_copy(
                             update={
                                 "status": IngestionStatus.SUCCEEDED,
@@ -271,13 +296,7 @@ class IngestionService:
                         raise PermanentIngestionFailure("repair cleanup failed")
                     document_id = existing.id
 
-                blocks = self._parser.parse(document, document_id)
-                try:
-                    chunks = chunk_blocks(blocks, workspace_id=document.workspace_id)
-                except ValueError as exc:
-                    raise PermanentIngestionFailure(
-                        "parser provenance is invalid"
-                    ) from exc
+                chunks = self._parse_and_chunk(document, document_id)
                 object_started = True
                 self._object_store.put(
                     document.workspace_id,
@@ -296,6 +315,7 @@ class IngestionService:
                     sha256=sha256,
                     byte_length=len(document.content),
                 )
+                record_started = True
                 self._documents.save(document.workspace_id, record)
                 committed = True
                 job = job.model_copy(
@@ -315,7 +335,9 @@ class IngestionService:
                 )
                 return job
             except IngestionFailure as failure:
-                if not committed and (object_started or chunks_started):
+                if not committed and (
+                    object_started or chunks_started or record_started
+                ):
                     clean = self._cleanup(document.workspace_id, document_id)
                 else:
                     clean = True
