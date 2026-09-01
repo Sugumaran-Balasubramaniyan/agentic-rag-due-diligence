@@ -10,7 +10,9 @@
   `git diff --check` and the secret-pattern scan passed; the worktree was
   clean.
 - Task 2 is accepted through head `5c5ce5f` after fix round 1.
-- Next task: Task 3, ingestion and provenance.
+- Task 3 ingestion and provenance is accepted through head `60a0241` after
+  three fix rounds and a clean independent re-review.
+- Next task: Task 4.
 - Publishing is blocked until the unrelated embedded Git credential identified during preflight is revoked and its remote is sanitized.
 - Task rule: each independently reviewed task is a checkpoint; after acceptance, the controller pushes it after fresh verification.
 - Checkpoint pushes use a newly created credential-free remote and a GitHub CLI
@@ -59,3 +61,22 @@
 - Corrected the generic retry compensation boundary so unexpected failures during read-only dedupe integrity reconstruction preserve valid committed document, object, and chunk state; current-attempt writes still compensate.
 - Evidence: 16 focused fix tests, 47 focused ingestion/adapter tests, and `make verify` with 60 backend tests plus frontend lint/type/test/build passed. Pinned pre-commit and `npm audit` passed.
 - Task 3 remains pending independent review. No push was performed.
+
+## Task 3 accepted checkpoint
+
+- Task 3 ingestion and provenance is accepted at production head `60a0241`.
+  The fix-round-3 independent re-review found the final Critical issue
+  addressed with no new breakage.
+- The accepted checkpoint provides strict workspace and access-context
+  isolation, validated UTF-8 Markdown/CSV ingestion, workspace-scoped SHA-256
+  deduplication, exact source provenance, deterministic chunking, atomic job
+  coalescing, bounded retries with redacted events, commit-marker repair and
+  compensation, complete-chunk integrity validation, and mutation-aware
+  preservation of valid committed state during read-only dedupe failures.
+- Fresh controller evidence: `make verify` passed with 60 backend tests plus
+  frontend lint, type-check, test, and production build; pinned pre-commit
+  passed; frontend `npm audit` reported 0 vulnerabilities; `git diff` and
+  status checks passed; and the filename-only secret scan found no matches.
+- MinIO and PostgreSQL remain injected adapter boundaries only. This checkpoint
+  does not claim external-service integration or production deployment.
+- Task 4 is next.

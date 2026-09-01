@@ -159,3 +159,16 @@
 
 - External MinIO/PostgreSQL services remain intentionally unstarted; PostgreSQL migrations remain Task 6.
 - Task 3 remains pending independent review and was not pushed.
+
+## Independent acceptance
+
+- Task 3 ingestion and provenance is accepted at production head `60a0241`.
+- The independent fix-round-3 re-review found the final Critical issue
+  addressed with no new breakage.
+- Fresh controller verification passed: `make verify` ran 60 backend tests plus
+  frontend lint, type-check, test, and production build; pinned pre-commit
+  passed; frontend `npm audit` reported 0 vulnerabilities; `git diff` and
+  status checks passed; and the filename-only secret scan found no matches.
+- Historical evidence and concerns above remain part of the record. MinIO and
+  PostgreSQL are injected boundaries only; no external-service integration or
+  production deployment is claimed.
