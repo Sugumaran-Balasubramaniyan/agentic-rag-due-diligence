@@ -39,6 +39,7 @@ from .domain import (
     AnalysisState,
     AnalysisStatus,
     ApprovalState,
+    CalculationTrace,
     ContractModel,
     Evidence,
     Finding,
@@ -98,16 +99,24 @@ class ApprovalFailureReason(StrEnum):
 
 
 class InvestigationBudgets(ContractModel):
-    max_graph_transitions: int = Field(default=12, ge=0)
-    max_tool_calls: int = Field(default=6, ge=0)
-    max_model_tokens: int = Field(default=8000, ge=0)
-    max_elapsed_seconds: float = Field(default=30, ge=0)
+    max_graph_transitions: int = Field(default=12, ge=0, le=12)
+    max_tool_calls: int = Field(default=6, ge=0, le=6)
+    max_model_tokens: int = Field(default=8000, ge=0, le=8000)
+    max_elapsed_seconds: float = Field(default=30, ge=0, le=30)
+
+    @model_validator(mode="after")
+    def elapsed_is_finite(self) -> InvestigationBudgets:
+        import math
+
+        if not math.isfinite(self.max_elapsed_seconds):
+            raise ValueError("elapsed budget must be finite")
+        return self
 
 
 class InvestigationRequest(ContractModel):
     analysis_id: str = Field(min_length=1)
     workspace_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-    question: str = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=4000)
 
     @model_validator(mode="after")
     def question_is_not_blank(self) -> InvestigationRequest:
@@ -119,7 +128,7 @@ class InvestigationRequest(ContractModel):
 class ClassificationResult(ContractModel):
     intent: InvestigationIntent
     confidence: float = Field(ge=0.0, le=1.0)
-    estimated_tokens: int = Field(ge=0)
+    estimated_tokens: int = Field(ge=0, le=8000)
 
 
 class FinancialPlanInput(ContractModel):
@@ -156,9 +165,9 @@ class MissingDocumentPlanInput(ContractModel):
 
 class InvestigationPlan(ContractModel):
     intent: InvestigationIntent
-    retrieval_query: str = Field(min_length=1)
-    supporting_queries: tuple[str, ...] = ()
-    tool_ids: tuple[ApprovedToolId, ...] = ()
+    retrieval_query: str = Field(min_length=1, max_length=4000)
+    supporting_queries: tuple[str, ...] = Field(default=(), max_length=4)
+    tool_ids: tuple[ApprovedToolId, ...] = Field(default=(), max_length=4)
     financial: FinancialPlanInput | None = None
     contract: ContractPlanInput | None = None
     contradiction: ContradictionPlanInput | None = None
@@ -170,6 +179,8 @@ class InvestigationPlan(ContractModel):
             raise ValueError("investigation plan contains duplicate tool IDs")
         if any(not query.strip() for query in self.supporting_queries):
             raise ValueError("supporting retrieval queries must not be blank")
+        if any(len(query) > 1000 for query in self.supporting_queries):
+            raise ValueError("supporting retrieval query is too long")
         required = {
             ApprovedToolId.CALCULATE_FINANCIAL_METRIC: self.financial,
             ApprovedToolId.INSPECT_CONTRACT_CLAUSE: self.contract,
@@ -183,18 +194,25 @@ class InvestigationPlan(ContractModel):
 
 
 class ClaimDraft(ContractModel):
-    id: str = Field(min_length=1)
-    category: str = Field(min_length=1)
+    id: str = Field(min_length=1, max_length=128)
+    tool_result_id: str = Field(min_length=1, max_length=128)
+    category: str = Field(min_length=1, max_length=64)
     severity: FindingSeverity
-    claim: str = Field(min_length=1)
-    citations: tuple[Evidence, ...] = ()
-    evidence: tuple[Evidence, ...] = ()
+    claim: str = Field(min_length=1, max_length=2000)
+    citations: tuple[Evidence, ...] = Field(default=(), max_length=10)
+    evidence: tuple[Evidence, ...] = Field(default=(), max_length=10)
     confidence: float = Field(ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def evidence_is_bounded(self) -> ClaimDraft:
+        if any(len(item.excerpt) > 4000 for item in (*self.citations, *self.evidence)):
+            raise ValueError("generated evidence excerpt is too long")
+        return self
 
 
 class GenerationResult(ContractModel):
-    claims: tuple[ClaimDraft, ...] = ()
-    estimated_tokens: int = Field(ge=0)
+    claims: tuple[ClaimDraft, ...] = Field(default=(), max_length=4)
+    estimated_tokens: int = Field(ge=0, le=8000)
 
 
 class FailureDetail(ContractModel):
@@ -455,10 +473,15 @@ class DeterministicClaimGenerator:
             drafts.append(
                 ClaimDraft(
                     id=f"claim-{position}",
+                    tool_result_id=result.id,
                     category=category,
                     severity=severity,
                     claim=result.claim,
-                    citations=result.primary_evidence,
+                    citations=(
+                        result.evidence
+                        if result.tool_id is ApprovedToolId.DETECT_CONTRADICTIONS
+                        else result.primary_evidence
+                    ),
                     evidence=result.evidence,
                     confidence=1.0,
                 )
@@ -885,6 +908,7 @@ class BoundedInvestigationWorkflow:
                 response = runtime.classifier.classify(runtime.request.question)
                 if not isinstance(response, ClassificationResult):
                     raise _InvariantFailure()
+                response = ClassificationResult.model_validate(response.model_dump())
                 runtime.ledger.model_call(response.estimated_tokens)
                 return {"classification": response}
 
@@ -900,6 +924,7 @@ class BoundedInvestigationWorkflow:
                 )
                 if not isinstance(response, InvestigationPlan):
                     raise _InvariantFailure()
+                response = InvestigationPlan.model_validate(response.model_dump())
                 if not response.retrieval_query.strip():
                     raise _InvariantFailure()
                 runtime.ledger.model_call(64)
@@ -990,6 +1015,9 @@ class BoundedInvestigationWorkflow:
                         | MissingDocumentResult,
                     ):
                         raise _InvariantFailure()
+                    result = result.model_copy(
+                        update={"id": f"tool-result-{len(results) + 1}"}
+                    )
                     if result.tool_id is not tool_id:
                         raise _InvariantFailure()
                     calls.append(call)
@@ -1019,11 +1047,18 @@ class BoundedInvestigationWorkflow:
                 )
                 if not isinstance(generated, GenerationResult):
                     raise _InvariantFailure()
+                generated = GenerationResult.model_validate(generated.model_dump())
                 runtime.ledger.model_call(generated.estimated_tokens)
                 if not generated.claims:
                     raise _SafeAbstention(AbstentionReason.UNSUPPORTED_EVIDENCE)
                 claims = tuple(
-                    Claim(id=draft.id, text=draft.claim, evidence=draft.citations)
+                    Claim(
+                        id=draft.id,
+                        text=draft.claim,
+                        evidence=draft.citations,
+                        tool_result_id=draft.tool_result_id,
+                        allows_contradiction=draft.category == "contradiction",
+                    )
                     for draft in generated.claims
                 )
                 try:
@@ -1034,15 +1069,41 @@ class BoundedInvestigationWorkflow:
                     raise _SafeAbstention(abstention.reason) from abstention
                 if verification.claims_verified != len(generated.claims):
                     raise _InvariantFailure()
+                successful_results = {
+                    result.id: result
+                    for result in results
+                    if result.status is ToolResultStatus.SUCCEEDED
+                }
                 findings = tuple(
                     Finding(
                         id=draft.id.replace("claim-", "finding-", 1),
                         category=draft.category,
                         severity=draft.severity,
                         claim=draft.claim,
-                        evidence=list(draft.evidence),
+                        evidence=list(draft.citations),
                         confidence=draft.confidence,
                         verification_status=VerificationStatus.VERIFIED,
+                        calculation=(
+                            CalculationTrace(
+                                operation=plan.financial.operation.value,
+                                value=cast(
+                                    FinancialMetricResult,
+                                    successful_results[draft.tool_result_id],
+                                ).value,
+                                unit=cast(
+                                    FinancialMetricResult,
+                                    successful_results[draft.tool_result_id],
+                                ).unit.value,
+                                tool_result_id=draft.tool_result_id,
+                            )
+                            if plan.financial is not None
+                            and draft.tool_result_id in successful_results
+                            and isinstance(
+                                successful_results[draft.tool_result_id],
+                                FinancialMetricResult,
+                            )
+                            else None
+                        ),
                     )
                     for draft in generated.claims
                 )
@@ -1054,13 +1115,23 @@ class BoundedInvestigationWorkflow:
         def completeness(state: WorkflowGraphState) -> WorkflowGraphState:
             def action() -> dict[str, object]:
                 findings = state["analysis"].findings
-                successful_result_count = sum(
-                    result.status is ToolResultStatus.SUCCEEDED
-                    for result in state.get("tool_results", ())
-                )
+                results = state.get("tool_results", ())
+                successful_ids = {
+                    result.id
+                    for result in results
+                    if result.status is ToolResultStatus.SUCCEEDED
+                }
+                claims = state.get("claims", ())
                 if (
                     not findings
-                    or len(findings) != successful_result_count
+                    or len(findings) != len(successful_ids)
+                    or {claim.id for claim in claims}
+                    != {
+                        finding.id.replace("finding-", "claim-", 1)
+                        for finding in findings
+                    }
+                    or {claim.tool_result_id for claim in claims} != successful_ids
+                    or len({claim.tool_result_id for claim in claims}) != len(claims)
                     or any(
                         finding.verification_status is not VerificationStatus.VERIFIED
                         for finding in findings
@@ -1254,6 +1325,13 @@ class ApprovalBoundary:
         self, result: InvestigationResult, decision: ApprovalDecision
     ) -> ApprovalOutcome:
         analysis = result.analysis
+        if not isinstance(decision, ApprovalDecision):
+            return ApprovalOutcome(
+                analysis=analysis,
+                approval_state=ApprovalState.PENDING,
+                completed=False,
+                reason=ApprovalFailureReason.INTERNAL,
+            )
         if decision is ApprovalDecision.REJECTED:
             analysis, _ = self._approval_event(analysis, AgentEventStatus.SKIPPED)
             return ApprovalOutcome(
@@ -1300,6 +1378,11 @@ class ApprovalBoundary:
             title="Due-diligence investigation findings",
             status=AnalysisStatus.COMPLETED,
             findings=list(analysis.findings),
+            calculations=[
+                finding.calculation
+                for finding in analysis.findings
+                if finding.calculation is not None
+            ],
             unresolved_questions=[],
             approval_state=ApprovalState.APPROVED,
         )
@@ -1314,7 +1397,7 @@ class ApprovalBoundary:
         self, analysis: AnalysisState, status: AgentEventStatus
     ) -> tuple[AnalysisState, bool]:
         if self.event_store is None:
-            return analysis, True
+            return analysis, False
         event = AgentEvent(
             sequence=len(analysis.events) + 1,
             node="approval",

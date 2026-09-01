@@ -70,6 +70,11 @@ def evaluate_tool_routing(
     """Measure only question-to-approved-tool routing against literal cases."""
     active_classifier = classifier or DeterministicQuestionClassifier()
     active_planner = planner or DeterministicInvestigationPlanner()
+    question_ids = [question.id for question in manifest.benchmark_questions]
+    if len(question_ids) != len(set(question_ids)):
+        raise ValueError("routing manifest must contain an exact unique question set")
+    if set(question_ids) != set(LITERAL_TOOL_ROUTING):
+        raise ValueError("routing manifest must contain the exact literal question set")
     scenarios: list[ToolRoutingScenario] = []
     for question in manifest.benchmark_questions:
         if question.id not in LITERAL_TOOL_ROUTING:

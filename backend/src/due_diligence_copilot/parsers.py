@@ -105,7 +105,15 @@ class CsvDocumentParser:
                     for column_number, value in enumerate(row, start=1)
                 ]
             )
-            for column_number, value in enumerate(text_values, start=1):
+            if row_number > 1 and text_values:
+                text_values[0] = " | ".join(text_values)
+            column_order = (
+                (*range(2, len(text_values) + 1), 1)
+                if row_number > 1
+                else tuple(range(1, len(text_values) + 1))
+            )
+            for column_number in column_order:
+                value = text_values[column_number - 1]
                 if not value.strip():
                     continue
                 location = {

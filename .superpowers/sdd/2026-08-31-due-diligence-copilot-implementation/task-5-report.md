@@ -194,3 +194,53 @@ $ git ls-files -co --exclude-standard | rg -i \
   the typed port plus deterministic in-memory implementation only.
 - Independent review is intentionally absent under the no-subagents instruction;
   this report records a sole-implementer self-review.
+
+## Fix round 1/5 evidence
+
+The committed `aaf04d4` baseline was clean and had no active test/build process.
+The first focused regression run was intentionally RED:
+
+```text
+$ timeout --signal=TERM 60s uv run pytest tests/test_agentic_fix_round1.py -q
+13 failed, 2 passed, 1 warning
+```
+
+The failures were the approval bypass, missing event-store enforcement, lost
+EUR unit, asymmetric unit cases, missing budget ceilings, incomplete routing
+manifest validation, unchecked provider evidence, and unbounded provider
+request output. The warning was the LangGraph checkpoint serializer pending
+deprecation.
+
+The fix adds exact enum approval validation and persistence failure handling,
+stable tool-result IDs with completeness bijection, citation-derived verified
+evidence, a typed Decimal calculation trace on findings and reports,
+header-aware bounded CSV row context, symmetric units, global budget ceilings,
+bounded/revalidated provider outputs, and exact literal routing-manifest
+validation. `langchain-core==0.3.79` is pinned as the compatible exact
+dependency; `langgraph==0.6.6` remains pinned and imports are warning-free.
+
+Focused GREEN evidence:
+
+```text
+$ timeout --signal=TERM 60s uv run pytest -W error tests/test_agentic_fix_round1.py tests/test_agentic_tools.py tests/test_agentic_workflow.py tests/test_agentic_evaluation.py -q
+60 passed
+```
+
+Full GREEN evidence:
+
+```text
+$ make verify
+156 passed in 1.58s
+frontend lint: passed
+frontend type-check: passed
+frontend test: 1 passed
+frontend build: passed
+```
+
+The fix-round evaluation remains literal and deterministic: all 14 seeded
+question IDs are required and the seeded routing result is 14/14 (1.0000).
+Pinned pre-commit, frontend high-severity audit, diff check, and filename-only
+secret scan are recorded for the closing run. Minor event-store defensive-copy
+and timer hard-wall/start timing improvements remain deferred to a later task;
+durable database persistence remains Task 6. This is a local fix-round
+checkpoint and does not claim external acceptance or live-provider quality.

@@ -237,3 +237,24 @@
   injected or documented boundaries only; no live external integration or
   deployment is claimed. Task 5 bounded agentic investigation is next.
 - This checkpoint is accepted locally but has not been pushed.
+
+## Task 5 fix round 1/5 checkpoint
+
+- Starting from committed Task 5 implementation `aaf04d4`, the sole-implementer
+  fix round closes the approval type/persistence bypass, binds every verified
+  draft to one unique successful tool-result ID, derives final evidence only
+  from CitationVerifier-reviewed citations, and carries typed Decimal financial
+  calculation traces with retained CSV currency units.
+- Provider and routing contracts now enforce bounded cardinality/text/token
+  outputs, global budgets of at most 12 transitions, 6 tools, 8,000 model
+  tokens, and 30 seconds, plus exact literal benchmark-ID equality. Financial
+  unit compatibility is symmetric and invalid mixed-unit operations abstain.
+- The warning-free dependency set pins `langgraph==0.6.6` and
+  `langchain-core==0.3.79`. Fresh verification reports 156 backend tests plus
+  frontend lint/type-check/test/build passing with warnings treated as errors;
+  the fix-round focused suite reports 60 passed. No live provider, database,
+  deployment, external acceptance, or production report finalization is
+  claimed.
+- Minor event-store defensive-copy and hard-wall/timer-start timing concerns
+  remain explicitly deferred; durable database event persistence remains Task
+  6. This checkpoint is not an acceptance claim and has not been pushed.

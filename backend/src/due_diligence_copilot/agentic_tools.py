@@ -121,6 +121,7 @@ class ToolCall(ContractModel):
 
 
 class FinancialMetricResult(ContractModel):
+    id: str = Field(default="unassigned-tool-result", min_length=1, max_length=128)
     tool_id: ApprovedToolId = ApprovedToolId.CALCULATE_FINANCIAL_METRIC
     status: ToolResultStatus
     value: Decimal | None = None
@@ -132,6 +133,7 @@ class FinancialMetricResult(ContractModel):
 
 
 class ContractClauseResult(ContractModel):
+    id: str = Field(default="unassigned-tool-result", min_length=1, max_length=128)
     tool_id: ApprovedToolId = ApprovedToolId.INSPECT_CONTRACT_CLAUSE
     status: ToolResultStatus
     clause: ContractClause
@@ -142,6 +144,7 @@ class ContractClauseResult(ContractModel):
 
 
 class ContradictionResult(ContractModel):
+    id: str = Field(default="unassigned-tool-result", min_length=1, max_length=128)
     tool_id: ApprovedToolId = ApprovedToolId.DETECT_CONTRADICTIONS
     status: ToolResultStatus
     subject: str
@@ -152,6 +155,7 @@ class ContradictionResult(ContractModel):
 
 
 class MissingDocumentResult(ContractModel):
+    id: str = Field(default="unassigned-tool-result", min_length=1, max_length=128)
     tool_id: ApprovedToolId = ApprovedToolId.ANALYZE_MISSING_DOCUMENTS
     status: ToolResultStatus
     document_name: str
@@ -224,6 +228,10 @@ def _label_values(
             unit = (
                 FinancialUnit.PERCENT
                 if match.group("percent")
+                else FinancialUnit.EUR
+                if "(eur)" in value_text[: match.start()].casefold()
+                else FinancialUnit.USD
+                if "(usd)" in value_text[: match.start()].casefold()
                 else FinancialUnit((match.group("currency") or "unitless").upper())
                 if match.group("currency")
                 else FinancialUnit.UNITLESS
@@ -245,9 +253,13 @@ def _evidence_lines(evidence: tuple[Evidence, ...]) -> tuple[str, ...]:
                 items,
                 key=lambda item: item.source_location.cell or "",
             )
-            lines.append(",".join(item.excerpt for item in ordered))
+            if len(ordered) == 1 and "\n" in ordered[0].excerpt:
+                lines.extend(ordered[0].excerpt.splitlines())
+            else:
+                lines.append(",".join(item.excerpt for item in ordered))
         else:
-            lines.extend(item.excerpt for item in items)
+            for item in items:
+                lines.extend(item.excerpt.splitlines())
     return tuple(lines)
 
 
@@ -255,7 +267,13 @@ def _evidence_containing(
     evidence: tuple[Evidence, ...], marker: str
 ) -> tuple[Evidence, ...]:
     wanted = marker.casefold()
-    matching = tuple(item for item in evidence if wanted in item.excerpt.casefold())
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", marker):
+        numeric_marker = re.compile(rf"(?<![0-9.]){re.escape(marker)}(?![0-9.])")
+        matching = tuple(
+            item for item in evidence if numeric_marker.search(item.excerpt) is not None
+        )
+    else:
+        matching = tuple(item for item in evidence if wanted in item.excerpt.casefold())
     return matching or evidence
 
 
@@ -337,8 +355,30 @@ class DeterministicToolRegistry:
                 None,
             )
             if explicit_percentage is not None:
+                right_values = _label_values(call.evidence, arguments.right_label or "")
+                if (
+                    right_values
+                    and right_values[0][1] is not FinancialUnit.PERCENT
+                    and arguments.left_label.casefold() != "largest customer"
+                ):
+                    return FinancialMetricResult(
+                        status=ToolResultStatus.ABSTAINED,
+                        unit=FinancialUnit.UNITLESS,
+                        evidence=call.evidence,
+                        reason=ToolAbstentionReason.UNIT_MISMATCH,
+                    )
                 value, line = explicit_percentage
-                primary = _evidence_containing(call.evidence, str(value))
+                primary_candidates = tuple(
+                    item
+                    for item in call.evidence
+                    if f"{value}%" in item.excerpt
+                    and "revenue share" in item.excerpt.casefold()
+                )
+                primary = (
+                    (min(primary_candidates, key=lambda item: len(item.excerpt)),)
+                    if primary_candidates
+                    else _evidence_containing(call.evidence, str(value))
+                )
                 return FinancialMetricResult(
                     status=ToolResultStatus.SUCCEEDED,
                     value=_quantize(value, arguments.precision),
@@ -358,7 +398,7 @@ class DeterministicToolRegistry:
             )
         left, left_unit, left_line = left_values[0]
         right, right_unit, right_line = right_values[0]
-        if left_unit is not right_unit and left_unit is not FinancialUnit.UNITLESS:
+        if left_unit is not right_unit:
             return FinancialMetricResult(
                 status=ToolResultStatus.ABSTAINED,
                 unit=FinancialUnit.UNITLESS,

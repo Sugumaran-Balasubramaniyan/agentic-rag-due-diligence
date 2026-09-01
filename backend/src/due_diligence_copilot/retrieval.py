@@ -102,6 +102,8 @@ class Claim(ContractModel):
     id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     evidence: tuple[Evidence, ...] = ()
+    tool_result_id: str | None = None
+    allows_contradiction: bool = False
 
 
 class CitationVerification(ContractModel):
@@ -862,18 +864,22 @@ class CitationVerifier:
                             "citation document identity is invalid",
                         )
                 all_evidence.append(citation)
-        if _has_material_contradiction(all_evidence):
+        if _has_material_contradiction(all_evidence) and not any(
+            claim.allows_contradiction for claim in claims
+        ):
             raise RetrievalAbstention(
                 AbstentionReason.CONTRADICTORY_EVIDENCE,
                 "citations contain materially contradictory values",
             )
         for claim in claims:
-            if not _claim_is_supported(claim, claim.evidence):
+            if not claim.allows_contradiction and not _claim_is_supported(
+                claim, claim.evidence
+            ):
                 raise RetrievalAbstention(
                     AbstentionReason.UNSUPPORTED_EVIDENCE,
                     f"claim {claim.id} is not supported by its citations",
                 )
-            if any(
+            if not claim.allows_contradiction and any(
                 not _citation_supports_claim(claim, citation)
                 for citation in claim.evidence
             ):

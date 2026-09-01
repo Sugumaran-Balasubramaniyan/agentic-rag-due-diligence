@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from enum import StrEnum
 from typing import Self
 
@@ -118,9 +119,18 @@ class Evidence(ContractModel):
     document_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     source_location: SourceLocation
-    excerpt: str = Field(min_length=1)
+    excerpt: str = Field(min_length=1, max_length=4000)
     chunk_id: str | None = None
     retrieval_score: float | None = None
+
+
+class CalculationTrace(ContractModel):
+    """Typed output of a deterministic financial calculation."""
+
+    operation: str = Field(min_length=1)
+    value: Decimal | None = None
+    unit: str = Field(min_length=1)
+    tool_result_id: str = Field(min_length=1)
 
 
 class Finding(ContractModel):
@@ -131,6 +141,7 @@ class Finding(ContractModel):
     evidence: list[Evidence] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     verification_status: VerificationStatus
+    calculation: CalculationTrace | None = None
 
 
 class AgentEvent(ContractModel):
@@ -179,6 +190,7 @@ class Report(ContractModel):
     findings: list[Finding] = Field(default_factory=list)
     unresolved_questions: list[str] = Field(default_factory=list)
     approval_state: ApprovalState
+    calculations: list[CalculationTrace] = Field(default_factory=list)
 
 
 class GroundTruthManifest(ContractModel):
