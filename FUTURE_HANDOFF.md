@@ -20,7 +20,9 @@
   pre-commit passed; frontend audit reported 0 vulnerabilities; diff/status and
   filename-only secret-pattern checks were clean. Seeded deterministic metrics
   remain Recall@10 0.9643 and MRR@10 0.8095.
-- Next task: Task 5 bounded agentic investigation.
+- Task 5 bounded agentic investigation is implemented in the local checkpoint
+  containing this handoff. It has not been pushed or independently reviewed,
+  per the sole-implementer/no-subagents instruction.
 - Publishing is blocked until the unrelated embedded Git credential identified during preflight is revoked and its remote is sanitized.
 - Task rule: each independently reviewed task is a checkpoint; after acceptance, the controller pushes it after fresh verification.
 - Checkpoint pushes use a newly created credential-free remote and a GitHub CLI
@@ -36,6 +38,33 @@
 5. Never repeat an accepted task solely because conversation context was compacted.
 6. After review, push the accepted checkpoint through the newly created
    credential-free remote using the distinct GitHub CLI token.
+
+## Task 5 implementation checkpoint
+
+- Added the pinned LangGraph 0.6.6 typed finite investigation DAG, exact
+  transition/tool/token/time budgets, four closed deterministic evidence-linked
+  tools, provider and accounting protocols, bounded redacted analysis-event
+  persistence, fail-closed branches, literal seeded routing evaluation, and a
+  separate explicit approval boundary.
+- Retrieved document instructions cannot select tools. The seeded injection
+  fixture reaches no tool call and cannot enter event summaries. Tool arguments
+  reference exactly the authorized retrieved evidence supplied to each call.
+- The graph stops at `AWAITING_APPROVAL` with only verified findings and no
+  report. Explicit rejection, unverified findings, non-awaiting states, and
+  approval-event persistence failures cannot complete or create a report.
+- Focused Task 5 verification passed 41 tests. Literal tool routing measured
+  14/14 (`1.0000`, target `>=0.90`). Full `make verify` passed with Ruff, strict
+  mypy over 20 source files, 137 backend tests, frontend lint/type-check, one
+  frontend test, and the production build.
+- LangGraph emits a pending-deprecation warning about the future serializer
+  `allowed_objects` default during import. Task 5 does not instantiate a
+  checkpointer or serializer; the warning is retained as an explicit dependency
+  concern.
+- No API, Celery, database migration, UI, deployment, live-provider, external
+  action, or durable database event integration is claimed. No push was
+  performed. Durable persistence remains Task 6.
+- Next step: independent review/acceptance by a future controller when allowed,
+  then Task 6 persistence and API integration.
 
 ## Task 2 checkpoint
 

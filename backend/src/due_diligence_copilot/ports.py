@@ -5,7 +5,7 @@ from __future__ import annotations
 from io import BytesIO
 from typing import Protocol
 
-from .domain import DocumentRecord
+from .domain import AgentEvent, DocumentRecord
 from .ingestion_contracts import (
     Chunk,
     IngestionEvent,
@@ -70,6 +70,16 @@ class IngestionEventStore(Protocol):
     def list_events(
         self, workspace_id: str, job_id: str
     ) -> tuple[IngestionEvent, ...]: ...
+
+
+class AnalysisEventStore(Protocol):
+    def append(
+        self, workspace_id: str, analysis_id: str, event: AgentEvent
+    ) -> None: ...
+
+    def list_events(
+        self, workspace_id: str, analysis_id: str
+    ) -> tuple[AgentEvent, ...]: ...
 
 
 class MinioResponse(Protocol):

@@ -6,7 +6,7 @@ import re
 from io import BytesIO
 from threading import Condition
 
-from .domain import DocumentRecord, DocumentType
+from .domain import AgentEvent, DocumentRecord, DocumentType
 from .ingestion_contracts import (
     Chunk,
     IngestionEvent,
@@ -14,6 +14,7 @@ from .ingestion_contracts import (
     IngestionStatus,
 )
 from .ports import (
+    AnalysisEventStore,
     IngestionEventStore,
     JobRepository,
     MinioClient,
@@ -170,6 +171,34 @@ class InMemoryIngestionEventStore(IngestionEventStore, JobRepository):
     def list_events(self, workspace_id: str, job_id: str) -> tuple[IngestionEvent, ...]:
         validate_workspace_id(workspace_id)
         return tuple(self._events.get((workspace_id, job_id), ()))
+
+
+class InMemoryAnalysisEventStore(AnalysisEventStore):
+    """Bounded in-memory analysis events for deterministic local execution."""
+
+    MAX_EVENTS = 32
+
+    def __init__(self) -> None:
+        self._events: dict[tuple[str, str], list[AgentEvent]] = {}
+
+    def append(self, workspace_id: str, analysis_id: str, event: AgentEvent) -> None:
+        validate_workspace_id(workspace_id)
+        if not analysis_id:
+            raise ValueError("analysis_id must not be empty")
+        key = (workspace_id, analysis_id)
+        events = self._events.setdefault(key, [])
+        expected_sequence = len(events) + 1
+        if event.sequence != expected_sequence:
+            raise ValueError("analysis event sequence is not contiguous")
+        if len(events) >= self.MAX_EVENTS:
+            raise ValueError("analysis event limit exceeded")
+        events.append(event)
+
+    def list_events(
+        self, workspace_id: str, analysis_id: str
+    ) -> tuple[AgentEvent, ...]:
+        validate_workspace_id(workspace_id)
+        return tuple(self._events.get((workspace_id, analysis_id), ()))
 
 
 class MinioObjectStore(ObjectStore):
