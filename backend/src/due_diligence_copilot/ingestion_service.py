@@ -358,7 +358,11 @@ class IngestionService:
                     continue
                 return self._failed(job, failure, attempt=attempt)
             except Exception:
-                clean = committed or self._cleanup(document.workspace_id, document_id)
+                mutation_started = object_started or chunks_started or record_started
+                if committed or not mutation_started:
+                    clean = True
+                else:
+                    clean = self._cleanup(document.workspace_id, document_id)
                 if clean and attempt < self._max_attempts:
                     job = job.model_copy(update={"attempts": attempt})
                     self._save(job)

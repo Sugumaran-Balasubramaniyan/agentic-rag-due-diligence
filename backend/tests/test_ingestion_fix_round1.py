@@ -572,3 +572,59 @@ def test_concurrent_identical_submitters_coalesce_to_one_terminal_job() -> None:
         IngestionStatus.RUNNING,
         IngestionStatus.SUCCEEDED,
     ]
+
+
+class UnexpectedIntegrityParser:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def parse(
+        self, document: UploadDocument, document_id: str
+    ) -> tuple[NormalizedBlock, ...]:
+        del document, document_id
+        self.attempts += 1
+        raise RuntimeError("sensitive parser failure details")
+
+
+def test_read_only_dedupe_failure_preserves_committed_state() -> None:
+    object_store = InMemoryObjectStore()
+    repository = InMemoryDocumentRepository()
+    index = InMemoryChunkIndex()
+    source = document()
+    committed = IngestionService(object_store, repository, index).ingest(
+        AUTHORIZED, source
+    )
+    document_id = committed.document_id or ""
+    record_before = repository.get("workspace-a", document_id)
+    object_before = object_store.get("workspace-a", document_id)
+    chunks_before = index.list("workspace-a")
+    assert record_before is not None
+    assert object_before == source.content
+    assert tuple(chunk.text for chunk in chunks_before) == (
+        "# Title",
+        "## Section",
+        "A useful fact.",
+    )
+    parser = UnexpectedIntegrityParser()
+    duplicate_service = IngestionService(object_store, repository, index, parser=parser)
+
+    failed = duplicate_service.ingest(AUTHORIZED, source)
+    events = duplicate_service.events(AUTHORIZED, failed.id)
+
+    assert failed.status == IngestionStatus.FAILED
+    assert failed.attempts == 3
+    assert failed.failure_classification == "transient"
+    assert parser.attempts == 3
+    assert [event.attempt for event in events if event.attempt is not None] == [
+        1,
+        2,
+        3,
+    ]
+    assert all(
+        "sensitive parser failure details" not in event.summary
+        and "A useful fact" not in event.summary
+        for event in events
+    )
+    assert repository.get("workspace-a", document_id) == record_before
+    assert object_store.get("workspace-a", document_id) == object_before
+    assert index.list("workspace-a") == chunks_before

@@ -131,3 +131,31 @@
 - The in-memory coalescing implementation uses condition notification rather than polling. The test command has an external 30-second deadlock guard; later persistent adapters must provide equivalent terminal notification semantics.
 - External MinIO/PostgreSQL services remain intentionally unstarted; PostgreSQL migrations remain Task 6.
 - Task 3 remains pending independent review and was not pushed.
+
+## Fix Round 3 evidence
+
+### Root cause and implementation
+
+- `_is_committed` performs parser-based integrity reconstruction before any current-attempt mutation flags are set. The generic unexpected-exception branch previously treated `committed=False` as sufficient reason to call `_cleanup`, deleting a valid pre-existing document during a read-only failure.
+- The generic branch is now mutation-aware: it compensates only when this attempt started object, chunk, or document-record writes. Read-only dedupe failures retry and terminate without mutating existing committed state. The classified `IngestionFailure` branch already used the correct mutation boundary.
+- The other exception paths were audited: object/chunk/document writes set their flags before port calls; persist-then-raise remains compensated; repair cleanup explicitly attempts all scoped deletes before returning; post-commit job/event failures retain committed state.
+
+### RED/GREEN
+
+- Covering test: `test_read_only_dedupe_failure_preserves_committed_state` first creates a complete valid commit, then uses a parser that raises an unexpected error during duplicate integrity reconstruction. It asserts three bounded attempts, transient terminal failure, redacted events, and byte-for-byte/record/chunk-tuple preservation.
+- RED: `timeout 30s env PYTHONDONTWRITEBYTECODE=1 uv run pytest tests/test_ingestion_fix_round1.py -q` — 1 failed, 15 passed. The final assertion showed the committed repository record became `None`.
+- GREEN: the same bounded command — 16 passed, exit 0.
+- Focused ingestion GREEN: `PYTHONDONTWRITEBYTECODE=1 uv run pytest tests/test_ingestion.py tests/test_ingestion_full.py tests/test_ingestion_canonical.py tests/test_ingestion_boundaries.py tests/test_postgres_adapter_reads.py tests/test_ingestion_fix_round1.py -q` — 47 passed.
+
+### Exact verification
+
+- `make verify` — passed: Ruff, strict mypy, 60 backend tests, frontend ESLint, TypeScript check, 1 frontend test, and Vite production build.
+- `uvx --from pre-commit==4.3.0 pre-commit run --all-files` — passed: Ruff, Ruff format, and Prettier.
+- `npm audit` — passed: found 0 vulnerabilities.
+- `git diff --check` — passed.
+- Bounded filename-only secret scan of changed files — passed with no matches.
+
+### Fix Round 3 concerns
+
+- External MinIO/PostgreSQL services remain intentionally unstarted; PostgreSQL migrations remain Task 6.
+- Task 3 remains pending independent review and was not pushed.

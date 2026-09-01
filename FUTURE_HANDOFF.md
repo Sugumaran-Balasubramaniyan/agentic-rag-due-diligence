@@ -53,3 +53,9 @@
 - Added document-record compensation for persist-then-raise failures, exact complete-chunk integrity checks for dedupe, requested parser document identity enforcement, and condition-notified terminal coalescing for concurrent identical submissions.
 - RED was 4 failed/11 passed for the four new behavior tests. GREEN was 15 focused fix tests and 46 focused ingestion/adapter tests. `make verify` passed with 59 backend tests plus frontend lint/type/test/build; pinned pre-commit passed; `npm audit` found 0 vulnerabilities; diff and bounded changed-file secret scans passed.
 - Task 3 remains pending independent review. Do not push this checkpoint until controller review accepts it.
+
+## Task 3 fix round 3 checkpoint
+
+- Corrected the generic retry compensation boundary so unexpected failures during read-only dedupe integrity reconstruction preserve valid committed document, object, and chunk state; current-attempt writes still compensate.
+- Evidence: 16 focused fix tests, 47 focused ingestion/adapter tests, and `make verify` with 60 backend tests plus frontend lint/type/test/build passed. Pinned pre-commit and `npm audit` passed.
+- Task 3 remains pending independent review. No push was performed.
