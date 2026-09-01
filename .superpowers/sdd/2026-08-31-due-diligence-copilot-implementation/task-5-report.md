@@ -183,8 +183,9 @@ $ git ls-files -co --exclude-standard | rg -i \
 - Scope excludes API endpoints, Celery, database migrations, UI, deployment,
   live provider quality, external messaging, source mutation, and business
   transactions.
-- No push or subagent review was performed, as explicitly required for this
-  sole-implementer task.
+- No push was performed during the implementation and fix rounds. The initial
+  sole-implementer checkpoint had no independent review; independent Luna
+  acceptance at `96aee94` is recorded in the final section below.
 
 ## Concerns
 
@@ -194,8 +195,8 @@ $ git ls-files -co --exclude-standard | rg -i \
   warning-free without suppression.
 - Durable database event persistence remains Task 6. Task 5 provides and tests
   the typed port plus deterministic in-memory implementation only.
-- Independent review is intentionally absent under the no-subagents instruction;
-  this report records a sole-implementer self-review.
+- This report records the sole-implementer self-review that preceded the
+  independent Luna acceptance recorded below.
 
 ## Fix round 1/5 evidence
 
@@ -381,7 +382,21 @@ $ npm audit --audit-level=high
 found 0 vulnerabilities
 ```
 
-`git diff --check` and the filename-only secret scan were clean. No push,
-external acceptance, live-provider quality, API integration, or durable event
-persistence is claimed. Independent re-review/acceptance remains the next
-checkpoint before Task 6.
+`git diff --check`, the worktree status/diff review, and the filename-only
+secret scan were clean.
+
+## Final acceptance and next task
+
+Task 5 code was accepted by independent Luna review at `96aee94`. The follow-up
+commit `dae41c4` is the mechanical pre-commit formatting commit.
+
+Fresh controller verification at the Task 5 code checkpoint passed: `make
+verify` passed 202 backend tests plus frontend lint, type-check, test, and build;
+pinned pre-commit passed; frontend `npm audit --audit-level=high` found 0
+vulnerabilities; literal routing was `14/14`; and `git diff --check`, clean
+status, and the filename-only secret scan passed.
+
+Task 5 is accepted locally and has not been pushed. The next task is Task 6
+persistence/API. Explicit limitations remain: no API, Celery, database
+migrations, UI, deployment, live-provider integration, or durable database
+event persistence yet.

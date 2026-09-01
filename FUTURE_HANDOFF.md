@@ -20,12 +20,12 @@
   pre-commit passed; frontend audit reported 0 vulnerabilities; diff/status and
   filename-only secret-pattern checks were clean. Seeded deterministic metrics
   remain Recall@10 0.9643 and MRR@10 0.8095.
-- Task 5 bounded agentic investigation is implemented in the local checkpoint
-  based on `79fdc26`. The final fix-round change keeps contradiction findings'
+- Task 5 bounded agentic investigation is accepted locally by independent Luna
+  review at `96aee94`. The final fix-round change keeps contradiction findings'
   complete `ToolResult.evidence` lineage consistent between generation and
   approval, so a legitimate contradiction can be approved into a report while
-  same-ID citation tampering remains rejected. It has not been pushed or
-  independently re-reviewed in this worker.
+  same-ID citation tampering remains rejected. The mechanical pre-commit
+  formatting follow-up is `dae41c4`; neither checkpoint has been pushed.
 - Publishing is blocked until the unrelated embedded Git credential identified during preflight is revoked and its remote is sanitized.
 - Task rule: each independently reviewed task is a checkpoint; after acceptance, the controller pushes it after fresh verification.
 - Checkpoint pushes use a newly created credential-free remote and a GitHub CLI
@@ -68,8 +68,8 @@
 - No API, Celery, database migration, UI, deployment, live-provider, external
   action, or durable database event integration is claimed. No push was
   performed. Durable persistence remains Task 6.
-- Next step: independent re-review/acceptance of the round-5 fix, then Task 6
-  persistence and API integration.
+- Task 5 is accepted locally. Next task: Task 6 persistence and API
+  integration.
 
 ## Task 2 checkpoint
 
@@ -285,3 +285,20 @@ Minor event-store defensive-copy and elapsed timer start/hard-wall timing concer
 - Hardened approval with canonical full-`Evidence` fingerprints, exact approved-tool to exact result-class checks, independent duplicate result and finding ID rejection, all-results-success validation, and one-to-one finding lineage.
 - Isolated routing expectations in a private immutable canonical mapping and retained the public routing dictionary only as a compatibility view. Added explicit Pydantic bounds to tool, result, finding, retrieval, context, routing, and nested string contracts.
 - Focused Task 5 verification: 104 passed under `pytest -W error`; Ruff and strict mypy passed. No push was performed. The latest instruction limited the closing test run to focused Task 5 suites.
+
+## Task 5 accepted checkpoint
+
+- Task 5 code was accepted by independent Luna review at `96aee94`.
+- The follow-up commit `dae41c4` is the mechanical pre-commit formatting
+  commit.
+- Fresh controller verification at the Task 5 code checkpoint passed:
+  `make verify` passed with 202 backend tests plus frontend lint, type-check,
+  test, and build; pinned pre-commit passed; frontend
+  `npm audit --audit-level=high` found 0 vulnerabilities; literal routing was
+  `14/14`; and `git diff --check`, clean status, and the filename-only secret
+  scan passed.
+- Task 5 is accepted locally and has not been pushed. The next task is Task 6
+  persistence/API.
+- Explicit limitations remain: no API, Celery, database migrations, UI,
+  deployment, live-provider integration, or durable database event persistence
+  yet.
