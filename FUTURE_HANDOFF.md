@@ -80,3 +80,26 @@
 - MinIO and PostgreSQL remain injected adapter boundaries only. This checkpoint
   does not claim external-service integration or production deployment.
 - Task 4 is next.
+
+## Task 4 implementation checkpoint
+
+- Implemented deterministic lexical/vector retrieval, typed retriever and
+  reranker ports, pre-retrieval workspace authorization, RRF with candidate
+  depth 20 and final top 10, deterministic reranking, bounded whole-chunk
+  context packing, retrieved-only citation verification, claim alignment, and
+  typed fail-closed abstention.
+- Added parameterized PostgreSQL full-text and pgvector retrieval boundaries
+  with workspace predicates inside scoped SQL, plus deterministic local
+  implementations for CI.
+- Added literal Recall@10/MRR@10 evaluation against all 14 Asteria benchmark
+  questions. Current local metrics are Recall@10 0.9643 and MRR@10 0.8095,
+  above the specification thresholds of 0.90 and 0.80.
+- Added malformed citation, unsupported/contradictory abstention,
+  authorization ordering, SQL workspace binding, context budget, and
+  cross-workspace isolation tests. Focused Task 4 tests: 11 passed; full
+  backend suite: 71 passed.
+- Fresh local gates: `make verify`, pinned pre-commit, frontend `npm audit`,
+  diff check, and filename-only secret scan passed. No live provider or
+  database integration is claimed. Task 4 remains pending independent review;
+  no push was performed.
+- Next task: Task 5.
