@@ -580,3 +580,25 @@ abstention, reranker snapshot, citation, contradiction, and benchmark
 behavior. PostgreSQL/pgvector remain injected adapter boundaries only. Task 4
 remains pending independent review and acceptance; this round records local
 implementation and verification evidence only.
+
+## Task 4 documentation-only milestone finalization
+
+Independent round-4 review accepted production head `71fc059`: the
+standalone-comma and punctuation Critical finding is addressed, with no new
+Critical or Important breakage.
+
+The controller independently verified at `71fc059`:
+
+```text
+make verify: 96 backend tests passed; frontend lint, type-check, test, and build passed
+uvx --from pre-commit==4.3.0 pre-commit run --all-files: passed
+npm audit --audit-level=high: found 0 vulnerabilities
+git diff --check and git status: clean
+filename-only secret-pattern scan: no matching filenames
+seeded metrics: Recall@10 0.9643; MRR@10 0.8095
+```
+
+The Task 4 checkpoint is accepted locally at `71fc059`; it has not been
+pushed. PostgreSQL/pgvector, model/provider, and production integration remain
+unexercised injected or documented boundaries. Task 5 bounded agentic
+investigation is next.

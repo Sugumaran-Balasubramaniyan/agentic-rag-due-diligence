@@ -12,7 +12,15 @@
 - Task 2 is accepted through head `5c5ce5f` after fix round 1.
 - Task 3 ingestion and provenance is accepted through head `60a0241` after
   three fix rounds and a clean independent re-review.
-- Next task: Task 4.
+- Task 4 hybrid retrieval and citation verification is accepted at production
+  head `71fc059` after clean independent round-4 review. The checkpoint has not
+  been pushed.
+- Fresh controller verification at `71fc059`: `make verify` passed with 96
+  backend tests plus frontend lint, type-check, test, and build; pinned
+  pre-commit passed; frontend audit reported 0 vulnerabilities; diff/status and
+  filename-only secret-pattern checks were clean. Seeded deterministic metrics
+  remain Recall@10 0.9643 and MRR@10 0.8095.
+- Next task: Task 5 bounded agentic investigation.
 - Publishing is blocked until the unrelated embedded Git credential identified during preflight is revoked and its remote is sanitized.
 - Task rule: each independently reviewed task is a checkpoint; after acceptance, the controller pushes it after fresh verification.
 - Checkpoint pushes use a newly created credential-free remote and a GitHub CLI
@@ -179,3 +187,24 @@
   integration is claimed.
 - Task 4 remains pending independent review and acceptance. This is a local
   fix-round checkpoint only; no push was performed.
+
+## Task 4 accepted checkpoint
+
+- Task 4 hybrid retrieval and citation verification is accepted at production
+  head `71fc059` after independent round-4 review found the standalone-comma
+  and punctuation Critical finding addressed with no new Critical or Important
+  breakage.
+- The accepted checkpoint provides evidence-first, fail-closed citation and
+  claim alignment; typed abstention for unsupported, contradictory, malformed,
+  ambiguous, and unauthorized evidence; workspace filtering before retrieval,
+  fusion, reranking, and citation acceptance; immutable reranker candidate
+  validation; and deterministic local retrieval with Recall@10 0.9643 and MRR@10
+  0.8095 on the seeded benchmark.
+- Controller verification at the accepted head passed `make verify` with 96
+  backend tests plus frontend lint, type-check, test, and build; pinned
+  pre-commit; frontend audit with 0 vulnerabilities; clean diff/status; and no
+  secret-pattern filenames.
+- PostgreSQL/pgvector, model/provider, and production integration remain
+  injected or documented boundaries only; no live external integration or
+  deployment is claimed. Task 5 bounded agentic investigation is next.
+- This checkpoint is accepted locally but has not been pushed.
