@@ -8,4 +8,5 @@
 - Do not claim production use, quality metrics, latency, or deployment status without reproducible evidence.
 - Keep the public demo read-only and deterministic by default.
 - Update `FUTURE_HANDOFF.md` at every accepted milestone.
+- Each independently reviewed task is a checkpoint; after acceptance, the controller pushes that checkpoint only after fresh verification.
 

@@ -2,7 +2,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-31-due-diligence-copilot-design.md`
 
-**Global constraints:** Use TDD for production behavior. Preserve provenance and workspace isolation. Keep PR CI deterministic. Do not publish unsupported metrics or production claims. Implementers and reviewers use `gpt-5.6-luna`; the controller performs integration rulings and final acceptance. Commit every accepted task. Update `FUTURE_HANDOFF.md` after each milestone.
+**Global constraints:** Use TDD for production behavior. Preserve provenance and workspace isolation. Keep PR CI deterministic. Do not publish unsupported metrics or production claims. Implementers and reviewers use `gpt-5.6-luna`; the controller performs integration rulings and final acceptance. Commit every accepted task. Update `FUTURE_HANDOFF.md` after each milestone. Each independently reviewed task is a checkpoint; after acceptance, the controller pushes that checkpoint after fresh verification.
 
 ## Task 1: Bootstrap executable project contracts
 
