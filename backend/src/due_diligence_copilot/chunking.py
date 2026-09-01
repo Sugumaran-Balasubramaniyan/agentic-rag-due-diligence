@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 
 from .ingestion_contracts import Chunk, NormalizedBlock
+from .workspace import validate_workspace_id
 
 MAX_CHUNK_CHARACTERS = 1200
 
@@ -15,13 +16,14 @@ def chunk_blocks(
     workspace_id: str,
     max_characters: int = MAX_CHUNK_CHARACTERS,
 ) -> tuple[Chunk, ...]:
-    if not workspace_id:
-        raise ValueError("workspace_id must not be empty")
-    if max_characters < 1:
-        raise ValueError("max_characters must be positive")
+    validate_workspace_id(workspace_id)
+    if not 1 <= max_characters <= MAX_CHUNK_CHARACTERS:
+        raise ValueError("max_characters must be between 1 and 1200")
 
     chunks: list[Chunk] = []
     for block in blocks:
+        if block.source_location.document_id != block.document_id:
+            raise ValueError("source location document_id must match document_id")
         for start in range(0, len(block.text), max_characters):
             text = block.text[start : start + max_characters]
             content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()

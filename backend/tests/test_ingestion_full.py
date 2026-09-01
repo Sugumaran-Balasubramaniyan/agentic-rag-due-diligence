@@ -13,6 +13,7 @@ from due_diligence_copilot.adapters import (
 from due_diligence_copilot.chunking import chunk_blocks
 from due_diligence_copilot.domain import DocumentType
 from due_diligence_copilot.ingestion_contracts import (
+    AccessContext,
     IngestionFailureClassification,
     IngestionStatus,
     UploadDocument,
@@ -25,6 +26,12 @@ from due_diligence_copilot.ingestion_service import (
     validate_upload,
 )
 from due_diligence_copilot.parsers import CsvDocumentParser, MarkdownDocumentParser
+
+AUTHORIZED = AccessContext(
+    principal_id="test",
+    allowed_workspace_ids={"workspace-a", "workspace-b"},
+    workspace_id="workspace-a",
+)
 
 
 def upload(
@@ -132,9 +139,9 @@ def test_same_bytes_deduplicate_only_inside_one_workspace() -> None:
     index = InMemoryChunkIndex()
     service = IngestionService(object_store, repository, index)
 
-    first = service.ingest(upload())
-    duplicate = service.ingest(upload(filename="renamed.md"))
-    isolated = service.ingest(upload(workspace_id="workspace-b"))
+    first = service.ingest(AUTHORIZED, upload())
+    duplicate = service.ingest(AUTHORIZED, upload(filename="renamed.md"))
+    isolated = service.ingest(AUTHORIZED, upload(workspace_id="workspace-b"))
 
     assert first.status == IngestionStatus.SUCCEEDED
     assert duplicate.status == IngestionStatus.SUCCEEDED
@@ -149,10 +156,17 @@ def test_same_bytes_deduplicate_only_inside_one_workspace() -> None:
 def test_cross_workspace_reads_are_denied_by_default() -> None:
     repository = InMemoryDocumentRepository()
     service = IngestionService(InMemoryObjectStore(), repository, InMemoryChunkIndex())
-    job = service.ingest(upload())
+    job = service.ingest(AUTHORIZED, upload())
 
     with pytest.raises(PermissionError):
-        service.get_job("workspace-b", job.id)
+        service.get_job(
+            AccessContext(
+                principal_id="test",
+                allowed_workspace_ids={"workspace-b"},
+                workspace_id="workspace-a",
+            ),
+            job.id,
+        )
     with pytest.raises(PermissionError):
         repository.get("workspace-b", job.document_id or "missing")
 
@@ -178,8 +192,8 @@ def test_transient_failures_retry_three_total_attempts_and_are_observable() -> N
         parser=parser,
     )
 
-    job = service.ingest(upload())
-    events = service.events("workspace-a", job.id)
+    job = service.ingest(AUTHORIZED, upload())
+    events = service.events(AUTHORIZED, job.id)
 
     assert job.status == IngestionStatus.SUCCEEDED
     assert parser.attempts == 3
@@ -203,7 +217,7 @@ def test_permanent_failure_does_not_retry() -> None:
         parser=parser,
     )
 
-    job = service.ingest(upload())
+    job = service.ingest(AUTHORIZED, upload())
     assert job.status == IngestionStatus.FAILED
     assert job.failure_classification == "permanent"
     assert parser.attempts == 1
@@ -215,7 +229,7 @@ def test_validation_failure_is_failed_without_attempting_storage() -> None:
         object_store, InMemoryDocumentRepository(), InMemoryChunkIndex()
     )
 
-    job = service.ingest(upload(b"", filename="empty.md"))
+    job = service.ingest(AUTHORIZED, upload(b"", filename="empty.md"))
     assert job.status == IngestionStatus.FAILED
     assert job.failure_classification == "validation"
     assert object_store.keys() == ()

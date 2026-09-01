@@ -22,6 +22,8 @@ class ObjectStore(Protocol):
 
     def get(self, workspace_id: str, document_id: str) -> bytes: ...
 
+    def delete(self, workspace_id: str, document_id: str) -> None: ...
+
 
 class DocumentRepository(Protocol):
     def save(self, workspace_id: str, document: DocumentRecord) -> None: ...
@@ -38,11 +40,21 @@ class ChunkIndex(Protocol):
 
     def list(self, workspace_id: str) -> tuple[Chunk, ...]: ...
 
+    def delete(self, workspace_id: str, document_id: str) -> None: ...
+
 
 class DocumentParser(Protocol):
     def parse(
         self, document: UploadDocument, document_id: str
     ) -> tuple[NormalizedBlock, ...]: ...
+
+
+class JobRepository(Protocol):
+    def create_if_absent(self, job: IngestionJob) -> tuple[IngestionJob, bool]: ...
+
+    def save_job(self, job: IngestionJob) -> None: ...
+
+    def get_job(self, workspace_id: str, job_id: str) -> IngestionJob | None: ...
 
 
 class IngestionEventStore(Protocol):
@@ -57,7 +69,19 @@ class IngestionEventStore(Protocol):
     ) -> tuple[IngestionEvent, ...]: ...
 
 
+class MinioResponse(Protocol):
+    def read(self) -> bytes: ...
+
+    def close(self) -> None: ...
+
+    def release_conn(self) -> None: ...
+
+
 class MinioClient(Protocol):
+    def get_object(self, bucket_name: str, object_name: str) -> MinioResponse: ...
+
+    def remove_object(self, bucket_name: str, object_name: str) -> object: ...
+
     def put_object(
         self,
         bucket_name: str,

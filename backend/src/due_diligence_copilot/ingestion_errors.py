@@ -5,6 +5,10 @@ from __future__ import annotations
 from .ingestion_contracts import IngestionFailureClassification
 
 
+class AuthorizationError(PermissionError):
+    pass
+
+
 class IngestionFailure(Exception):
     classification = IngestionFailureClassification.PERMANENT
 

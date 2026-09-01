@@ -9,6 +9,7 @@ from .adapters import InMemoryIngestionEventStore
 from .chunking import chunk_blocks
 from .domain import DocumentRecord
 from .ingestion_contracts import (
+    AccessContext,
     IngestionEvent,
     IngestionFailureClassification,
     IngestionJob,
@@ -35,8 +36,10 @@ from .ports import (
     DocumentParser,
     DocumentRepository,
     IngestionEventStore,
+    JobRepository,
     ObjectStore,
 )
+from .workspace import require_read_workspace, require_workspace_access
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 _MEDIA_TYPES = {".md": "text/markdown", ".csv": "text/csv"}
@@ -90,6 +93,7 @@ class IngestionService:
         *,
         parser: DocumentParser | None = None,
         event_store: IngestionEventStore | None = None,
+        job_repository: JobRepository | None = None,
         max_attempts: int = 3,
     ) -> None:
         if max_attempts != 3:
@@ -99,6 +103,7 @@ class IngestionService:
         self._chunks = chunk_index
         self._parser = parser or DeterministicDocumentParser()
         self._events = event_store or InMemoryIngestionEventStore()
+        self._jobs = job_repository or InMemoryIngestionEventStore()
         self._max_attempts = max_attempts
 
     @staticmethod
@@ -116,7 +121,7 @@ class IngestionService:
         return f"document-{digest}"
 
     def _save(self, job: IngestionJob) -> None:
-        self._events.save_job(job)
+        self._jobs.save_job(job)
 
     def _event(
         self,
@@ -166,17 +171,63 @@ class IngestionService:
         )
         return updated
 
-    def ingest(self, document: UploadDocument) -> IngestionJob:
-        job = IngestionJob(
+    def _cleanup(self, workspace_id: str, document_id: str) -> bool:
+        clean = True
+        try:
+            self._chunks.delete(workspace_id, document_id)
+        except Exception:
+            clean = False
+        try:
+            self._object_store.delete(workspace_id, document_id)
+        except Exception:
+            clean = False
+        return clean
+
+    def _is_committed(self, workspace_id: str, document: DocumentRecord) -> bool:
+        try:
+            content = self._object_store.get(workspace_id, document.id)
+            if (
+                hashlib.sha256(content).hexdigest() != document.sha256
+                or len(content) != document.byte_length
+            ):
+                return False
+        except PermissionError:
+            return False
+        chunks = tuple(
+            chunk
+            for chunk in self._chunks.list(workspace_id)
+            if chunk.document_id == document.id
+        )
+        if not chunks or [chunk.ordinal for chunk in chunks] != list(
+            range(len(chunks))
+        ):
+            return False
+        return all(
+            chunk.workspace_id == workspace_id
+            and chunk.source_location.document_id == document.id
+            and chunk.source_location.path == document.path
+            and hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
+            == chunk.content_hash
+            for chunk in chunks
+        )
+
+    def ingest(self, context: AccessContext, document: UploadDocument) -> IngestionJob:
+        require_workspace_access(context, document.workspace_id)
+        initial_job = IngestionJob(
             id=self._job_id(document),
             workspace_id=document.workspace_id,
             filename=document.filename,
             media_type=document.media_type,
             status=IngestionStatus.QUEUED,
         )
-        self._save(job)
+        job, created = self._jobs.create_if_absent(initial_job)
+        if not created:
+            return job
+
         self._event(job, status=IngestionStatus.QUEUED, summary="Ingestion job queued")
-        job = self._update(
+        job = job.model_copy(update={"status": IngestionStatus.RUNNING})
+        self._save(job)
+        self._event(
             job, status=IngestionStatus.RUNNING, summary="Ingestion job running"
         )
 
@@ -187,38 +238,55 @@ class IngestionService:
                 update={"sha256": sha256, "media_type": document.media_type}
             )
             self._save(job)
-            existing = self._documents.find_by_sha256(document.workspace_id, sha256)
-            if existing is not None:
-                job = job.model_copy(
-                    update={
-                        "status": IngestionStatus.SUCCEEDED,
-                        "attempts": 1,
-                        "document_id": existing.id,
-                        "deduplicated": True,
-                    }
-                )
-                self._save(job)
-                self._event(
-                    job,
-                    status=job.status,
-                    attempt=1,
-                    summary="Existing document reused",
-                )
-                return job
-        except IngestionFailure as failure:
+        except UploadValidationError as failure:
             return self._failed(job, failure, attempt=1)
 
         document_id = self._document_id(document.workspace_id, sha256)
         for attempt in range(1, self._max_attempts + 1):
+            object_started = False
+            chunks_started = False
+            committed = False
             try:
+                existing = self._documents.find_by_sha256(document.workspace_id, sha256)
+                if existing is not None:
+                    if self._is_committed(document.workspace_id, existing):
+                        job = job.model_copy(
+                            update={
+                                "status": IngestionStatus.SUCCEEDED,
+                                "attempts": attempt,
+                                "document_id": existing.id,
+                                "deduplicated": True,
+                                "failure_classification": None,
+                            }
+                        )
+                        self._save(job)
+                        self._event(
+                            job,
+                            status=job.status,
+                            attempt=attempt,
+                            summary="Existing document reused",
+                        )
+                        return job
+                    if not self._cleanup(document.workspace_id, existing.id):
+                        raise PermanentIngestionFailure("repair cleanup failed")
+                    document_id = existing.id
+
                 blocks = self._parser.parse(document, document_id)
-                chunks = chunk_blocks(blocks, workspace_id=document.workspace_id)
+                try:
+                    chunks = chunk_blocks(blocks, workspace_id=document.workspace_id)
+                except ValueError as exc:
+                    raise PermanentIngestionFailure(
+                        "parser provenance is invalid"
+                    ) from exc
+                object_started = True
                 self._object_store.put(
                     document.workspace_id,
                     document_id,
                     document.content,
                     document.media_type,
                 )
+                chunks_started = True
+                self._chunks.store(document.workspace_id, chunks)
                 record = DocumentRecord(
                     id=document_id,
                     display_name=PurePath(document.filename).stem,
@@ -229,7 +297,7 @@ class IngestionService:
                     byte_length=len(document.content),
                 )
                 self._documents.save(document.workspace_id, record)
-                self._chunks.store(document.workspace_id, chunks)
+                committed = True
                 job = job.model_copy(
                     update={
                         "status": IngestionStatus.SUCCEEDED,
@@ -247,9 +315,14 @@ class IngestionService:
                 )
                 return job
             except IngestionFailure as failure:
+                if not committed and (object_started or chunks_started):
+                    clean = self._cleanup(document.workspace_id, document_id)
+                else:
+                    clean = True
                 if (
                     failure.classification == IngestionFailureClassification.TRANSIENT
                     and attempt < self._max_attempts
+                    and clean
                 ):
                     job = job.model_copy(update={"attempts": attempt})
                     self._save(job)
@@ -257,19 +330,31 @@ class IngestionService:
                         job,
                         status=IngestionStatus.RUNNING,
                         attempt=attempt,
-                        classification=failure.classification,
+                        classification=IngestionFailureClassification.TRANSIENT,
                         summary="Transient ingestion failure; retry scheduled",
                     )
                     continue
                 return self._failed(job, failure, attempt=attempt)
-            except Exception as exc:
+            except Exception:
+                clean = committed or self._cleanup(document.workspace_id, document_id)
+                if clean and attempt < self._max_attempts:
+                    job = job.model_copy(update={"attempts": attempt})
+                    self._save(job)
+                    self._event(
+                        job,
+                        status=IngestionStatus.RUNNING,
+                        attempt=attempt,
+                        classification=IngestionFailureClassification.TRANSIENT,
+                        summary="Transient ingestion failure; retry scheduled",
+                    )
+                    continue
                 return self._failed(
                     job,
-                    PermanentIngestionFailure(type(exc).__name__),
+                    TransientIngestionFailure("adapter operation failed"),
                     attempt=attempt,
                 )
         return self._failed(
-            job, PermanentIngestionFailure("attempt limit reached"), attempt=3
+            job, TransientIngestionFailure("attempt limit reached"), attempt=3
         )
 
     def _failed(
@@ -292,12 +377,13 @@ class IngestionService:
         )
         return failed
 
-    def get_job(self, workspace_id: str, job_id: str) -> IngestionJob:
-        job = self._events.get_job(workspace_id, job_id)
+    def get_job(self, context: AccessContext, job_id: str) -> IngestionJob:
+        workspace_id = require_read_workspace(context)
+        job = self._jobs.get_job(workspace_id, job_id)
         if job is None:
             raise PermissionError("job is not available in this workspace")
         return job
 
-    def events(self, workspace_id: str, job_id: str) -> tuple[IngestionEvent, ...]:
-        job = self.get_job(workspace_id, job_id)
+    def events(self, context: AccessContext, job_id: str) -> tuple[IngestionEvent, ...]:
+        job = self.get_job(context, job_id)
         return self._events.list_events(job.workspace_id, job.id)

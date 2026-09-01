@@ -40,3 +40,10 @@
 - Added focused Protocol ports, deterministic in-memory adapters, and injected MinIO and PostgreSQL boundaries without migrations or external-service requirements.
 - RED evidence: the initial Task 3 contract probe failed because IngestionStatus was absent; the expanded suite initially failed collection because ingestion modules were absent. GREEN evidence: focused Task 3 suite passed 26 tests; full backend suite passed 39 tests.
 - Fresh controller verification: make verify passed; pinned pre-commit all-files passed; independent review remains pending by instruction.
+
+
+## Task 3 fix round 1 checkpoint
+
+- Controller fix round completed locally: strict workspace IDs, typed AccessContext authorization, context-only job/event reads, atomic job creation, compensating deletes and commit-marker ordering, repair-aware deduplication, bounded retries, redacted terminal failures, provenance identity checks, typed MinIO lifecycle, chunk limits, and PostgreSQL identifier allowlist are covered.
+- Current reconciled evidence: fix-round suite 11 passed; focused ingestion/adapter regression set 42 passed; `make verify` passed with 55 backend tests plus frontend lint/type/test/build; pinned pre-commit passed; `npm audit` found 0 vulnerabilities; diff and secret scans passed.
+- Task 3 remains pending independent review. Do not push this checkpoint until controller review accepts it.

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
+from typing import Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .domain import ContractModel, DocumentType, SourceLocation
 
@@ -25,8 +27,23 @@ class IngestionFailureClassification(StrEnum):
 FailureClassification = IngestionFailureClassification
 
 
+class AccessContext(ContractModel):
+    principal_id: str = Field(min_length=1)
+    allowed_workspace_ids: frozenset[str] = Field(min_length=1)
+    workspace_id: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+    )
+
+    @model_validator(mode="after")
+    def validate_workspaces(self) -> Self:
+        for workspace_id in self.allowed_workspace_ids:
+            if not re.fullmatch(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", workspace_id):
+                raise ValueError("invalid workspace_id")
+        return self
+
+
 class UploadDocument(ContractModel):
-    workspace_id: str = Field(min_length=1)
+    workspace_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     filename: str = Field(min_length=1)
     media_type: str = Field(min_length=1)
     content: bytes
@@ -41,10 +58,16 @@ class NormalizedBlock(ContractModel):
     block_type: str = Field(min_length=1)
     source_location: SourceLocation
 
+    @model_validator(mode="after")
+    def location_matches_document(self) -> Self:
+        if self.source_location.document_id != self.document_id:
+            raise ValueError("source location document_id must match document_id")
+        return self
+
 
 class Chunk(ContractModel):
     id: str = Field(min_length=1)
-    workspace_id: str = Field(min_length=1)
+    workspace_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     document_id: str = Field(min_length=1)
     ordinal: int = Field(ge=0)
     text: str = Field(min_length=1, max_length=1200)
@@ -52,10 +75,16 @@ class Chunk(ContractModel):
     block_id: str = Field(min_length=1)
     source_location: SourceLocation
 
+    @model_validator(mode="after")
+    def location_matches_document(self) -> Self:
+        if self.source_location.document_id != self.document_id:
+            raise ValueError("source location document_id must match document_id")
+        return self
+
 
 class IngestionJob(ContractModel):
     id: str = Field(min_length=1)
-    workspace_id: str = Field(min_length=1)
+    workspace_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     filename: str = Field(min_length=1)
     media_type: str = Field(min_length=1)
     status: IngestionStatus
@@ -69,7 +98,7 @@ class IngestionJob(ContractModel):
 class IngestionEvent(ContractModel):
     sequence: int = Field(ge=1)
     job_id: str = Field(min_length=1)
-    workspace_id: str = Field(min_length=1)
+    workspace_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     status: IngestionStatus
     attempt: int | None = Field(default=None, ge=1, le=3)
     classification: IngestionFailureClassification | None = None
