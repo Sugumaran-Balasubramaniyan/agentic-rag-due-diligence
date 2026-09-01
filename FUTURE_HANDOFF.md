@@ -21,8 +21,11 @@
   filename-only secret-pattern checks were clean. Seeded deterministic metrics
   remain Recall@10 0.9643 and MRR@10 0.8095.
 - Task 5 bounded agentic investigation is implemented in the local checkpoint
-  containing this handoff. It has not been pushed or independently reviewed,
-  per the sole-implementer/no-subagents instruction.
+  based on `79fdc26`. The final fix-round change keeps contradiction findings'
+  complete `ToolResult.evidence` lineage consistent between generation and
+  approval, so a legitimate contradiction can be approved into a report while
+  same-ID citation tampering remains rejected. It has not been pushed or
+  independently re-reviewed in this worker.
 - Publishing is blocked until the unrelated embedded Git credential identified during preflight is revoked and its remote is sanitized.
 - Task rule: each independently reviewed task is a checkpoint; after acceptance, the controller pushes it after fresh verification.
 - Checkpoint pushes use a newly created credential-free remote and a GitHub CLI
@@ -52,19 +55,21 @@
 - The graph stops at `AWAITING_APPROVAL` with only verified findings and no
   report. Explicit rejection, unverified findings, non-awaiting states, and
   approval-event persistence failures cannot complete or create a report.
-- Focused Task 5 verification passed 41 tests. Literal tool routing measured
-  14/14 (`1.0000`, target `>=0.90`). Full `make verify` passed with Ruff, strict
-  mypy over 20 source files, 137 backend tests, frontend lint/type-check, one
-  frontend test, and the production build.
-- LangGraph emits a pending-deprecation warning about the future serializer
-  `allowed_objects` default during import. Task 5 does not instantiate a
-  checkpointer or serializer; the warning is retained as an explicit dependency
-  concern.
+- Focused Task 5 fix-round verification passed 106 tests under
+  `pytest -W error`; the full backend suite passed 202 tests under the same
+  warnings-as-errors setting. `make verify` passed with Ruff, strict mypy over
+  20 source files, frontend lint/type-check, one frontend test, and the
+  production build.
+- Literal tool routing measured 14/14 (`1.0000`, target `>=0.90`). Pinned
+  pre-commit passed all hooks, and frontend `npm audit --audit-level=high`
+  found 0 vulnerabilities. Current imports are warning-free without global
+  suppression; the initial LangGraph serializer warning was removed by the
+  exact compatible `langchain-core==0.3.79` pin in fix round 1.
 - No API, Celery, database migration, UI, deployment, live-provider, external
   action, or durable database event integration is claimed. No push was
   performed. Durable persistence remains Task 6.
-- Next step: independent review/acceptance by a future controller when allowed,
-  then Task 6 persistence and API integration.
+- Next step: independent re-review/acceptance of the round-5 fix, then Task 6
+  persistence and API integration.
 
 ## Task 2 checkpoint
 

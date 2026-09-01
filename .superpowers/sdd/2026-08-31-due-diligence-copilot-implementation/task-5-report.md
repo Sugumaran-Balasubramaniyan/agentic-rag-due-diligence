@@ -188,8 +188,10 @@ $ git ls-files -co --exclude-standard | rg -i \
 
 ## Concerns
 
-- LangGraph 0.6.6 emits the dependency warning described above. It is retained
-  rather than globally suppressing a third-party compatibility signal.
+- The initial LangGraph 0.6.6 dependency emitted the pending serializer warning
+  described above. The exact compatible `langchain-core==0.3.79` pin added in
+  fix round 1 removed it; current warnings-as-errors and verification runs are
+  warning-free without suppression.
 - Durable database event persistence remains Task 6. Task 5 provides and tests
   the typed port plus deterministic in-memory implementation only.
 - Independent review is intentionally absent under the no-subagents instruction;
@@ -308,3 +310,78 @@ $ uv run pytest -W error tests/test_agentic_fix_round4.py tests/test_agentic_fix
 ```
 
 `uv run ruff check .` and `uv run mypy src` also passed. The closing verification was limited to the focused Task 5 suites per the latest task instruction; no push was performed.
+
+
+## Fix round 5/5 evidence
+
+Started from committed `79fdc26`. The supplied independent review finding was
+reproduced on the built-in contradiction path: the workflow reached
+`AWAITING_APPROVAL`, but approval returned `completed=False` with an internal
+failure because contradiction generation authorized the complete
+`ToolResult.evidence` set while approval compared the finding with
+`primary_evidence` first.
+
+The new regression was intentionally RED before the production change:
+
+```text
+$ uv run pytest -W error tests/test_agentic_fix_round5.py -q
+F.                                                                       [100%]
+1 failed, 1 passed
+AssertionError: assert False is True
+```
+
+The fix centralizes the authorized finding-evidence rule. Contradiction
+findings retain the complete exact `ToolResult.evidence` set so both sides of
+the conflict remain reportable and verifier-authorized; all other findings
+retain their exact `primary_evidence` set. Generation and approval now use the
+same rule, while the existing SHA-256 evidence fingerprints, provenance token,
+tool-result lineage, and all prior approval gates remain unchanged.
+
+Focused GREEN evidence:
+
+```text
+$ uv run pytest -W error tests/test_agentic_fix_round5.py -q
+..                                                                       [100%]
+
+$ timeout --signal=TERM 180s uv run pytest -W error -o addopts= \
+  tests/test_agentic_fix_round5.py tests/test_agentic_fix_round4.py \
+  tests/test_agentic_fix_round3.py tests/test_agentic_fix_round2.py \
+  tests/test_agentic_fix_round1.py tests/test_agentic_tools.py \
+  tests/test_agentic_workflow.py tests/test_agentic_evaluation.py
+106 passed in 1.78s
+```
+
+The legitimate contradiction case creates a completed approved report with
+both `security-policy.md` and `board-minutes.md` evidence. The paired test
+alters a citation excerpt without changing its ID and remains rejected with no
+report.
+
+Fresh full verification:
+
+```text
+$ timeout --signal=TERM 180s uv run pytest -W error -o addopts=
+202 passed in 2.20s
+
+$ make verify
+ruff: passed
+mypy: Success: no issues found in 20 source files
+202 passed in 2.21s
+frontend lint: passed
+frontend type-check: passed
+frontend test: 1 passed
+frontend build: passed
+
+$ uv run python -c 'from due_diligence_copilot.agentic_evaluation import evaluate_tool_routing; from due_diligence_copilot.synthetic_data import build_manifest; manifest, _ = build_manifest(); result = evaluate_tool_routing(manifest); print(f"scenarios={result.scenario_count} correct={result.correct_count} accuracy={result.accuracy:.4f} target_met={result.accuracy >= 0.90}")'
+scenarios=14 correct=14 accuracy=1.0000 target_met=True
+
+$ uvx --from pre-commit==4.3.0 pre-commit run --all-files
+ruff, ruff format, prettier: Passed
+
+$ npm audit --audit-level=high
+found 0 vulnerabilities
+```
+
+`git diff --check` and the filename-only secret scan were clean. No push,
+external acceptance, live-provider quality, API integration, or durable event
+persistence is claimed. Independent re-review/acceptance remains the next
+checkpoint before Task 6.

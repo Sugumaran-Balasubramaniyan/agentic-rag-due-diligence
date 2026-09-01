@@ -488,11 +488,7 @@ class DeterministicClaimGenerator:
                     category=category,
                     severity=severity,
                     claim=result.claim,
-                    citations=(
-                        result.evidence
-                        if result.tool_id is ApprovedToolId.DETECT_CONTRADICTIONS
-                        else result.primary_evidence
-                    ),
+                    citations=_authorized_finding_evidence(result),
                     evidence=result.evidence,
                     confidence=1.0,
                 )
@@ -551,6 +547,12 @@ def _evidence_fingerprints(
     evidence: tuple[Evidence, ...] | list[Evidence],
 ) -> tuple[str, ...]:
     return tuple(_canonical_evidence_fingerprint(item) for item in evidence)
+
+
+def _authorized_finding_evidence(result: ToolResult) -> tuple[Evidence, ...]:
+    if result.tool_id is ApprovedToolId.DETECT_CONTRADICTIONS:
+        return result.evidence
+    return result.primary_evidence
 
 
 def _estimated_output_tokens(value: ContractModel) -> int:
@@ -1609,7 +1611,7 @@ class ApprovalBoundary:
                 if finding.tool_result_id is None:
                     return False
                 tool_result = results_by_id[finding.tool_result_id]
-                expected_evidence = tool_result.primary_evidence or tool_result.evidence
+                expected_evidence = _authorized_finding_evidence(tool_result)
                 if _evidence_fingerprints(finding.evidence) != _evidence_fingerprints(
                     expected_evidence
                 ):
