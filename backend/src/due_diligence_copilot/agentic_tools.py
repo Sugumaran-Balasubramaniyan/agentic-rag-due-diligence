@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
-from typing import Protocol
+from typing import Annotated, Protocol
 
 from pydantic import Field, model_validator
 
@@ -21,6 +21,8 @@ class ApprovedToolId(StrEnum):
 
 
 APPROVED_TOOL_IDS = tuple(ApprovedToolId)
+
+EvidenceId = Annotated[str, Field(min_length=1, max_length=128)]
 
 
 class FinancialOperation(StrEnum):
@@ -59,7 +61,7 @@ class FinancialMetricArguments(ContractModel):
     left_label: str = Field(min_length=1, max_length=256)
     right_label: str | None = Field(default=None, max_length=256)
     precision: int = Field(default=1, ge=0, le=6)
-    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=10)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=10)
 
     @model_validator(mode="after")
     def validate_operands(self) -> FinancialMetricArguments:
@@ -77,17 +79,17 @@ class FinancialMetricArguments(ContractModel):
 
 class ContractClauseArguments(ContractModel):
     clause: ContractClause
-    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=10)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=10)
 
 
 class ContradictionArguments(ContractModel):
     subject: str = Field(min_length=1, max_length=256)
-    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=10)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=10)
 
 
 class MissingDocumentArguments(ContractModel):
     document_name: str = Field(min_length=1, max_length=256)
-    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=10)
+    evidence_ids: tuple[EvidenceId, ...] = Field(min_length=1, max_length=10)
 
 
 ToolArguments = (
@@ -107,7 +109,11 @@ class ToolCall(ContractModel):
     def validate_evidence_references(self) -> ToolCall:
         evidence_ids = set(self.arguments.evidence_ids)
         supplied_ids = {evidence.id for evidence in self.evidence}
-        if evidence_ids != supplied_ids:
+        if (
+            len(evidence_ids) != len(self.arguments.evidence_ids)
+            or evidence_ids != supplied_ids
+            or len(supplied_ids) != len(self.evidence)
+        ):
             raise ValueError("tool evidence must exactly match argument evidence_ids")
         expected_arguments = {
             ApprovedToolId.CALCULATE_FINANCIAL_METRIC: FinancialMetricArguments,
@@ -115,7 +121,7 @@ class ToolCall(ContractModel):
             ApprovedToolId.DETECT_CONTRADICTIONS: ContradictionArguments,
             ApprovedToolId.ANALYZE_MISSING_DOCUMENTS: MissingDocumentArguments,
         }
-        if not isinstance(self.arguments, expected_arguments[self.tool_id]):
+        if type(self.arguments) is not expected_arguments[self.tool_id]:
             raise ValueError("tool arguments do not match the approved tool ID")
         return self
 

@@ -7,11 +7,12 @@ import hmac
 import json
 import math
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from time import monotonic
-from typing import Protocol, TypedDict, cast
+from types import MappingProxyType
+from typing import Annotated, Protocol, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -55,6 +56,7 @@ from .domain import (
 from .ingestion_contracts import AccessContext
 from .ports import AnalysisEventStore, DocumentRepository
 from .retrieval import (
+    MAX_RETRIEVED_CHUNKS,
     AbstentionReason,
     CitationVerification,
     CitationVerifier,
@@ -118,7 +120,7 @@ class InvestigationBudgets(ContractModel):
 
 
 class InvestigationRequest(ContractModel):
-    analysis_id: str = Field(min_length=1)
+    analysis_id: str = Field(min_length=1, max_length=128)
     workspace_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     question: str = Field(min_length=1, max_length=4000)
 
@@ -170,7 +172,9 @@ class MissingDocumentPlanInput(ContractModel):
 class InvestigationPlan(ContractModel):
     intent: InvestigationIntent
     retrieval_query: str = Field(min_length=1, max_length=4000)
-    supporting_queries: tuple[str, ...] = Field(default=(), max_length=4)
+    supporting_queries: tuple[
+        Annotated[str, Field(min_length=1, max_length=1000)], ...
+    ] = Field(default=(), max_length=4)
     tool_ids: tuple[ApprovedToolId, ...] = Field(default=(), max_length=4)
     financial: FinancialPlanInput | None = None
     contract: ContractPlanInput | None = None
@@ -221,7 +225,7 @@ class GenerationResult(ContractModel):
 
 class FailureDetail(ContractModel):
     code: FailureCode
-    node: str = Field(min_length=1)
+    node: str = Field(min_length=1, max_length=64)
 
 
 class BudgetUsage(ContractModel):
@@ -236,9 +240,11 @@ class InvestigationResult(ContractModel):
     classification: ClassificationResult | None = None
     plan: InvestigationPlan | None = None
     context_pack: ContextPack | None = None
-    retrieved_chunk_ids: tuple[str, ...] = ()
-    tool_calls: tuple[ToolCall, ...] = ()
-    tool_results: tuple[ToolResult, ...] = ()
+    retrieved_chunk_ids: tuple[
+        Annotated[str, Field(min_length=1, max_length=128)], ...
+    ] = Field(default=(), max_length=MAX_RETRIEVED_CHUNKS)
+    tool_calls: tuple[ToolCall, ...] = Field(default=(), max_length=4)
+    tool_results: tuple[ToolResult, ...] = Field(default=(), max_length=4)
     failure: FailureDetail | None = None
     abstention_reason: AbstentionReason | None = None
     budget: BudgetUsage
@@ -513,19 +519,38 @@ class _InvariantFailure(Exception):
 
 _PROVENANCE_KEY = secrets.token_bytes(32)
 
+_EXPECTED_TOOL_RESULT_TYPES: Mapping[ApprovedToolId, type[ContractModel]] = (
+    MappingProxyType(
+        {
+            ApprovedToolId.CALCULATE_FINANCIAL_METRIC: FinancialMetricResult,
+            ApprovedToolId.INSPECT_CONTRACT_CLAUSE: ContractClauseResult,
+            ApprovedToolId.DETECT_CONTRADICTIONS: ContradictionResult,
+            ApprovedToolId.ANALYZE_MISSING_DOCUMENTS: MissingDocumentResult,
+        }
+    )
+)
+
 
 def _provenance_token(result: InvestigationResult, key: bytes = _PROVENANCE_KEY) -> str:
     payload = result.model_dump_json(exclude={"provenance_token"})
     return hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
 
 
+def _canonical_evidence_fingerprint(item: Evidence) -> str:
+    normalized = Evidence.model_validate(item.model_dump(mode="json"))
+    payload = json.dumps(
+        normalized.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _evidence_fingerprints(
     evidence: tuple[Evidence, ...] | list[Evidence],
 ) -> tuple[str, ...]:
-    return tuple(
-        json.dumps(item.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
-        for item in evidence
-    )
+    return tuple(_canonical_evidence_fingerprint(item) for item in evidence)
 
 
 def _estimated_output_tokens(value: ContractModel) -> int:
@@ -1050,16 +1075,8 @@ class BoundedInvestigationWorkflow:
                     runtime.ledger.tool_call()
                     call = self._build_tool_call(plan, tool_id, evidence)
                     result = runtime.tools.execute(call)
-                    expected_result_types: dict[ApprovedToolId, type[ContractModel]] = {
-                        ApprovedToolId.CALCULATE_FINANCIAL_METRIC: (
-                            FinancialMetricResult
-                        ),
-                        ApprovedToolId.INSPECT_CONTRACT_CLAUSE: ContractClauseResult,
-                        ApprovedToolId.DETECT_CONTRADICTIONS: ContradictionResult,
-                        ApprovedToolId.ANALYZE_MISSING_DOCUMENTS: MissingDocumentResult,
-                    }
-                    expected_result_type = expected_result_types[tool_id]
-                    if not isinstance(result, expected_result_type):
+                    expected_result_type = _EXPECTED_TOOL_RESULT_TYPES[tool_id]
+                    if type(result) is not expected_result_type:
                         raise _InvariantFailure()
                     result = cast(
                         ToolResult,
@@ -1072,12 +1089,22 @@ class BoundedInvestigationWorkflow:
                         and not result.evidence
                     ):
                         raise _InvariantFailure()
-                    if not set(item.id for item in result.evidence) <= set(
-                        item.id for item in call.evidence
-                    ):
-                        raise _InvariantFailure()
-                    if not set(item.id for item in result.primary_evidence) <= set(
-                        item.id for item in result.evidence
+                    result_evidence_fingerprints = _evidence_fingerprints(
+                        result.evidence
+                    )
+                    call_evidence_fingerprints = _evidence_fingerprints(call.evidence)
+                    primary_evidence_fingerprints = _evidence_fingerprints(
+                        result.primary_evidence
+                    )
+                    if (
+                        len(set(result_evidence_fingerprints))
+                        != len(result_evidence_fingerprints)
+                        or len(set(primary_evidence_fingerprints))
+                        != len(primary_evidence_fingerprints)
+                        or not set(result_evidence_fingerprints)
+                        <= set(call_evidence_fingerprints)
+                        or not set(primary_evidence_fingerprints)
+                        <= set(result_evidence_fingerprints)
                     ):
                         raise _InvariantFailure()
                     runtime.ledger.model_call(_estimated_output_tokens(result))
@@ -1504,50 +1531,92 @@ class ApprovalBoundary:
         )
 
     def _has_valid_workflow_provenance(self, result: InvestigationResult) -> bool:
-        if not result.provenance_token or not hmac.compare_digest(
-            result.provenance_token, _provenance_token(result, self.provenance_key)
-        ):
-            return False
-        successful = {
-            tool_result.id
-            for tool_result in result.tool_results
-            if tool_result.status is ToolResultStatus.SUCCEEDED
-        }
-        tool_results_by_id = {
-            tool_result.id: tool_result
-            for tool_result in result.tool_results
-            if tool_result.status is ToolResultStatus.SUCCEEDED
-        }
-        if len(result.tool_calls) != len(result.tool_results) or any(
-            call.tool_id is not tool_result.tool_id
-            or not set(_evidence_fingerprints(tool_result.evidence))
-            <= set(_evidence_fingerprints(call.evidence))
-            for call, tool_result in zip(
-                result.tool_calls, result.tool_results, strict=True
-            )
-        ):
-            return False
-        findings = result.analysis.findings
-        finding_ids = {finding.tool_result_id for finding in findings}
-        if (
-            not successful
-            or len(finding_ids) != len(findings)
-            or finding_ids != successful
-            or any(
-                finding.verification_status is not VerificationStatus.VERIFIED
-                or finding.tool_result_id is None
-                or not finding.evidence
-                or finding.tool_result_id not in tool_results_by_id
-                or _evidence_fingerprints(finding.evidence)
-                != _evidence_fingerprints(
-                    tool_results_by_id[finding.tool_result_id].primary_evidence
-                    or tool_results_by_id[finding.tool_result_id].evidence
+        try:
+            if type(result) is not InvestigationResult:
+                return False
+            if not result.provenance_token or not hmac.compare_digest(
+                result.provenance_token, _provenance_token(result, self.provenance_key)
+            ):
+                return False
+            if any(
+                type(tool_result)
+                is not _EXPECTED_TOOL_RESULT_TYPES.get(tool_result.tool_id)
+                for tool_result in result.tool_results
+            ):
+                return False
+            validated_result = InvestigationResult.model_validate(result.model_dump())
+            calls = validated_result.tool_calls
+            tool_results = validated_result.tool_results
+            findings = validated_result.analysis.findings
+            if not calls or len(calls) != len(tool_results):
+                return False
+            result_ids = tuple(tool_result.id for tool_result in tool_results)
+            if len(set(result_ids)) != len(result_ids):
+                return False
+            if any(
+                tool_result.status is not ToolResultStatus.SUCCEEDED
+                for tool_result in tool_results
+            ):
+                return False
+            call_tool_ids = tuple(call.tool_id for call in calls)
+            result_tool_ids = tuple(tool_result.tool_id for tool_result in tool_results)
+            if (
+                len(set(call_tool_ids)) != len(call_tool_ids)
+                or call_tool_ids != result_tool_ids
+            ):
+                return False
+            for call, tool_result in zip(calls, tool_results, strict=True):
+                expected_type = _EXPECTED_TOOL_RESULT_TYPES.get(call.tool_id)
+                if (
+                    expected_type is None
+                    or type(tool_result) is not expected_type
+                    or tool_result.tool_id is not call.tool_id
+                ):
+                    return False
+                call_fingerprints = _evidence_fingerprints(call.evidence)
+                result_fingerprints = _evidence_fingerprints(tool_result.evidence)
+                primary_fingerprints = _evidence_fingerprints(
+                    tool_result.primary_evidence
                 )
-                for finding in findings
-            )
-        ):
+                if (
+                    not result_fingerprints
+                    or not primary_fingerprints
+                    or len(set(call_fingerprints)) != len(call_fingerprints)
+                    or len(set(result_fingerprints)) != len(result_fingerprints)
+                    or len(set(primary_fingerprints)) != len(primary_fingerprints)
+                    or not set(result_fingerprints) <= set(call_fingerprints)
+                    or not set(primary_fingerprints) <= set(result_fingerprints)
+                ):
+                    return False
+            finding_ids = tuple(finding.id for finding in findings)
+            lineage_ids = tuple(finding.tool_result_id for finding in findings)
+            if (
+                len(findings) != len(tool_results)
+                or len(set(finding_ids)) != len(finding_ids)
+                or any(lineage_id is None for lineage_id in lineage_ids)
+                or len(set(lineage_ids)) != len(lineage_ids)
+                or set(lineage_ids) != set(result_ids)
+                or any(
+                    finding.verification_status is not VerificationStatus.VERIFIED
+                    for finding in findings
+                )
+            ):
+                return False
+            results_by_id = {
+                tool_result.id: tool_result for tool_result in tool_results
+            }
+            for finding in findings:
+                if finding.tool_result_id is None:
+                    return False
+                tool_result = results_by_id[finding.tool_result_id]
+                expected_evidence = tool_result.primary_evidence or tool_result.evidence
+                if _evidence_fingerprints(finding.evidence) != _evidence_fingerprints(
+                    expected_evidence
+                ):
+                    return False
+            return True
+        except Exception:
             return False
-        return True
 
     def _approval_event(
         self, analysis: AnalysisState, status: AgentEventStatus

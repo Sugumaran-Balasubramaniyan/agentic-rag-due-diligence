@@ -9,7 +9,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Annotated, Protocol
 
 from pydantic import Field
 
@@ -27,7 +27,9 @@ from .workspace import require_read_workspace
 CANDIDATE_DEPTH = 20
 RRF_K = 60
 FINAL_RESULT_COUNT = 10
+MAX_RETRIEVED_CHUNKS = 5 * FINAL_RESULT_COUNT
 MAX_CONTEXT_CHARACTERS = 6000
+ChunkId = Annotated[str, Field(min_length=1, max_length=128)]
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 _STOP_WORDS = frozenset(
@@ -74,9 +76,9 @@ class RetrievalHit(ContractModel):
 class ContextPack(ContractModel):
     """Packed whole chunks, bounded to 6,000 characters for deterministic CI."""
 
-    chunks: tuple[Chunk, ...]
-    chunk_ids: tuple[str, ...]
-    text: str
+    chunks: tuple[Chunk, ...] = Field(max_length=MAX_RETRIEVED_CHUNKS)
+    chunk_ids: tuple[ChunkId, ...] = Field(max_length=MAX_RETRIEVED_CHUNKS)
+    text: str = Field(max_length=MAX_CONTEXT_CHARACTERS)
     characters: int = Field(ge=0, le=MAX_CONTEXT_CHARACTERS)
 
 
@@ -99,10 +101,10 @@ class RetrievalAbstention(Exception):
 
 
 class Claim(ContractModel):
-    id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    evidence: tuple[Evidence, ...] = ()
-    tool_result_id: str | None = None
+    id: str = Field(min_length=1, max_length=128)
+    text: str = Field(min_length=1, max_length=2000)
+    evidence: tuple[Evidence, ...] = Field(default=(), max_length=10)
+    tool_result_id: str | None = Field(default=None, max_length=128)
     allows_contradiction: bool = False
 
 
@@ -113,7 +115,7 @@ class CitationVerification(ContractModel):
 
 
 class QuestionRetrievalMetric(ContractModel):
-    question_id: str
+    question_id: str = Field(min_length=1, max_length=128)
     recall_at_10: float = Field(ge=0.0, le=1.0)
     reciprocal_rank_at_10: float = Field(ge=0.0, le=1.0)
 
@@ -122,7 +124,7 @@ class RetrievalEvaluation(ContractModel):
     question_count: int = Field(ge=1)
     recall_at_10: float = Field(ge=0.0, le=1.0)
     mrr_at_10: float = Field(ge=0.0, le=1.0)
-    per_question: tuple[QuestionRetrievalMetric, ...]
+    per_question: tuple[QuestionRetrievalMetric, ...] = Field(max_length=32)
 
 
 class RetrievalOutcomeStatus(StrEnum):
@@ -132,7 +134,7 @@ class RetrievalOutcomeStatus(StrEnum):
 
 class RetrievalOutcome(ContractModel):
     status: RetrievalOutcomeStatus
-    hits: tuple[RetrievalHit, ...] = ()
+    hits: tuple[RetrievalHit, ...] = Field(default=(), max_length=FINAL_RESULT_COUNT)
     reason: AbstentionReason | None = None
 
 

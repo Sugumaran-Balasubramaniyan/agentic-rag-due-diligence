@@ -290,3 +290,21 @@ found 0 vulnerabilities
 ```
 
 Warnings remain zero under `pytest -W error`; no suppression was added. The provenance key is injectable for shared deployments and defaults to a process-local key for the pre-Task-6 in-memory boundary; durable key management and database persistence remain Task 6. Event-store defensive copies and elapsed timer start/hard-wall timing remain deferred minor concerns. This is a local checkpoint and does not claim external acceptance or live-provider quality.
+
+
+## Fix round 4/5 evidence
+
+Started from committed `831f551` with the round-4 regression suite present and the production contracts unchanged. The first focused run was intentionally RED: `uv run pytest -W error tests/test_agentic_fix_round4.py -q` reported `17 failed, 2 passed`.
+
+The fix uses a process-private immutable approved-tool to exact-result-class mapping and checks `type(result) is ExpectedClass` in both workflow execution and approval. Evidence relationships now use SHA-256 fingerprints of normalized complete `Evidence` models, including primary-evidence-to-result and result-to-call checks, so same-ID altered citations fail closed. Approval independently rejects duplicate result IDs and finding IDs, requires every result to succeed, and enforces a one-to-one finding lineage.
+
+Routing evaluation now reads private immutable canonical tool expectations while retaining the public dictionary as a compatibility view. Tool, result, finding, context, routing, and retrieval collections plus their nested identifiers and text fields have explicit Pydantic bounds. Retrieval aggregation is bounded at 50 IDs and context chunks because one primary plus four supporting queries can each return ten results.
+
+Focused GREEN evidence:
+
+```text
+$ uv run pytest -W error tests/test_agentic_fix_round4.py tests/test_agentic_fix_round3.py tests/test_agentic_fix_round2.py tests/test_agentic_fix_round1.py tests/test_agentic_tools.py tests/test_agentic_workflow.py tests/test_agentic_evaluation.py -q
+104 passed
+```
+
+`uv run ruff check .` and `uv run mypy src` also passed. The closing verification was limited to the focused Task 5 suites per the latest task instruction; no push was performed.

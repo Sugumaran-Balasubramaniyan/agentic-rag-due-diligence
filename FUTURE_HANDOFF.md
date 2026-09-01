@@ -272,3 +272,11 @@ Critical and important findings in this fix request are addressed. Minor event-s
 Started from `d80df01`. Round-3 regressions and fixes cover exact tool/result class mapping, unique finding correspondence, nested output limits and output-size token accounting, canonical evidence lineage into approval, verifier output validation, immutable routing expectations, and injected shared provenance keys. Verification: focused Task 5 suite `79 passed`; full `make verify` `181 passed`; pinned pre-commit passed; frontend audit found 0 vulnerabilities; routing `14/14`, accuracy `1.0000`.
 
 Minor event-store defensive-copy and elapsed timer start/hard-wall timing concerns remain deferred. The default provenance key is process-local until a shared durable secret boundary is supplied; Task 6 owns durable persistence/key integration. No external acceptance or live-provider claim is made.
+
+
+## Task 5 fix round 4 checkpoint
+
+- Started from `831f551` with the round-4 regression suite present and production files unchanged. The intentional RED run reported 17 failures and 2 passes.
+- Hardened approval with canonical full-`Evidence` fingerprints, exact approved-tool to exact result-class checks, independent duplicate result and finding ID rejection, all-results-success validation, and one-to-one finding lineage.
+- Isolated routing expectations in a private immutable canonical mapping and retained the public routing dictionary only as a compatibility view. Added explicit Pydantic bounds to tool, result, finding, retrieval, context, routing, and nested string contracts.
+- Focused Task 5 verification: 104 passed under `pytest -W error`; Ruff and strict mypy passed. No push was performed. The latest instruction limited the closing test run to focused Task 5 suites.

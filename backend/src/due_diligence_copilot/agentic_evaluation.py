@@ -24,25 +24,31 @@ from .domain import (
     SourceLocation,
 )
 
-LITERAL_TOOL_ROUTING: dict[str, tuple[ApprovedToolId, ...]] = {
-    "financial-revenue": (),
-    "largest-customer": (),
-    "revenue-concentration": (ApprovedToolId.CALCULATE_FINANCIAL_METRIC,),
-    "ebitda-calculation": (ApprovedToolId.CALCULATE_FINANCIAL_METRIC,),
-    "change-of-control": (ApprovedToolId.INSPECT_CONTRACT_CLAUSE,),
-    "supplier-escalation": (ApprovedToolId.INSPECT_CONTRACT_CLAUSE,),
-    "deal-risk": (
-        ApprovedToolId.CALCULATE_FINANCIAL_METRIC,
-        ApprovedToolId.INSPECT_CONTRACT_CLAUSE,
-    ),
-    "security-board-contradiction": (ApprovedToolId.DETECT_CONTRADICTIONS,),
-    "missing-soc2": (ApprovedToolId.ANALYZE_MISSING_DOCUMENTS,),
-    "unsupported-churn": (ApprovedToolId.ANALYZE_MISSING_DOCUMENTS,),
-    "prompt-injection-resistance": (),
-    "customer-contract-term": (ApprovedToolId.INSPECT_CONTRACT_CLAUSE,),
-    "revenue-reconciliation": (ApprovedToolId.CALCULATE_FINANCIAL_METRIC,),
-    "supplier-term": (ApprovedToolId.INSPECT_CONTRACT_CLAUSE,),
-}
+_CANONICAL_TOOL_ROUTING: Mapping[str, tuple[ApprovedToolId, ...]] = MappingProxyType(
+    {
+        "financial-revenue": (),
+        "largest-customer": (),
+        "revenue-concentration": (ApprovedToolId.CALCULATE_FINANCIAL_METRIC,),
+        "ebitda-calculation": (ApprovedToolId.CALCULATE_FINANCIAL_METRIC,),
+        "change-of-control": (ApprovedToolId.INSPECT_CONTRACT_CLAUSE,),
+        "supplier-escalation": (ApprovedToolId.INSPECT_CONTRACT_CLAUSE,),
+        "deal-risk": (
+            ApprovedToolId.CALCULATE_FINANCIAL_METRIC,
+            ApprovedToolId.INSPECT_CONTRACT_CLAUSE,
+        ),
+        "security-board-contradiction": (ApprovedToolId.DETECT_CONTRADICTIONS,),
+        "missing-soc2": (ApprovedToolId.ANALYZE_MISSING_DOCUMENTS,),
+        "unsupported-churn": (ApprovedToolId.ANALYZE_MISSING_DOCUMENTS,),
+        "prompt-injection-resistance": (),
+        "customer-contract-term": (ApprovedToolId.INSPECT_CONTRACT_CLAUSE,),
+        "revenue-reconciliation": (ApprovedToolId.CALCULATE_FINANCIAL_METRIC,),
+        "supplier-term": (ApprovedToolId.INSPECT_CONTRACT_CLAUSE,),
+    }
+)
+
+LITERAL_TOOL_ROUTING: dict[str, tuple[ApprovedToolId, ...]] = dict(
+    _CANONICAL_TOOL_ROUTING
+)
 
 
 @lru_cache(maxsize=1)
@@ -95,15 +101,15 @@ def _question_fingerprint(question: BenchmarkQuestion) -> str:
 
 
 class ToolRoutingScenario(ContractModel):
-    question_id: str = Field(min_length=1)
-    question: str = Field(min_length=1)
-    expected_tool_ids: tuple[ApprovedToolId, ...] = ()
-    actual_tool_ids: tuple[ApprovedToolId, ...] = ()
+    question_id: str = Field(min_length=1, max_length=128)
+    question: str = Field(min_length=1, max_length=4000)
+    expected_tool_ids: tuple[ApprovedToolId, ...] = Field(default=(), max_length=4)
+    actual_tool_ids: tuple[ApprovedToolId, ...] = Field(default=(), max_length=4)
     matched: bool
 
 
 class ToolRoutingEvaluation(ContractModel):
-    scenarios: tuple[ToolRoutingScenario, ...] = Field(min_length=1)
+    scenarios: tuple[ToolRoutingScenario, ...] = Field(min_length=1, max_length=32)
     correct_count: int = Field(ge=0)
     scenario_count: int = Field(gt=0)
     accuracy: float = Field(ge=0.0, le=1.0)
@@ -132,7 +138,7 @@ def evaluate_tool_routing(
     question_ids = [question.id for question in manifest.benchmark_questions]
     if len(question_ids) != len(set(question_ids)):
         raise ValueError("routing manifest must contain an exact unique question set")
-    if set(question_ids) != set(LITERAL_TOOL_ROUTING):
+    if set(question_ids) != set(_CANONICAL_TOOL_ROUTING):
         raise ValueError("routing manifest must contain the exact literal question set")
     canonical = _canonical_benchmark_questions()
     for question in manifest.benchmark_questions:
@@ -143,13 +149,13 @@ def evaluate_tool_routing(
             )
     scenarios: list[ToolRoutingScenario] = []
     for question in manifest.benchmark_questions:
-        if question.id not in LITERAL_TOOL_ROUTING:
+        if question.id not in _CANONICAL_TOOL_ROUTING:
             raise ValueError(f"missing literal routing expectation: {question.id}")
         classification = active_classifier.classify(question.question)
         plan = active_planner.plan(question.question, classification)
         if not isinstance(plan, InvestigationPlan):
             raise TypeError("planner returned an invalid investigation plan")
-        expected = LITERAL_TOOL_ROUTING[question.id]
+        expected = _CANONICAL_TOOL_ROUTING[question.id]
         actual = tuple(plan.tool_ids)
         scenarios.append(
             ToolRoutingScenario(

@@ -66,13 +66,13 @@ class NormalizedBlock(ContractModel):
 
 
 class Chunk(ContractModel):
-    id: str = Field(min_length=1)
+    id: str = Field(min_length=1, max_length=128)
     workspace_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-    document_id: str = Field(min_length=1)
+    document_id: str = Field(min_length=1, max_length=128)
     ordinal: int = Field(ge=0)
     text: str = Field(min_length=1, max_length=1200)
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    block_id: str = Field(min_length=1)
+    block_id: str = Field(min_length=1, max_length=128)
     source_location: SourceLocation
 
     @model_validator(mode="after")
