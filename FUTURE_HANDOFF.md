@@ -40,7 +40,7 @@
 
 - Implemented validated UTF-8 Markdown and CSV ingestion with a 10 MiB limit, filename and MIME safeguards, SHA-256 workspace-scoped deduplication, exact Markdown line and section provenance, CSV table and A1 cell provenance, deterministic 1,200-character chunks, typed job and event contracts, bounded three-attempt retries, and redacted event persistence.
 - Added focused Protocol ports, deterministic in-memory adapters, and injected MinIO and PostgreSQL boundaries without migrations or external-service requirements.
-- RED evidence: the initial Task 3 contract probe failed because IngestionStatus was absent; the expanded suite initially failed collection because ingestion modules were absent. GREEN evidence: focused Task 3 suite passed 26 tests; full backend suite passed 39 tests.
+- RED evidence: the initial Task 3 contract probe failed because IngestionStatus was absent; the expanded suite initially failed collection because ingestion modules were absent. GREEN evidence: focused Task 3 suite passed 26 tests; full backend suite passed 40 tests.
 - Fresh controller verification: make verify passed; pinned pre-commit all-files passed; independent review remains pending by instruction.
 
 
