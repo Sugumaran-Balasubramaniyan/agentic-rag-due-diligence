@@ -122,3 +122,24 @@
   controller-preserved retrieval file and the test file; remaining Ruff line
   findings were fixed, and the second pinned run passed without modification.
 - Task 4 remains pending independent review. No push was performed.
+
+## Task 4 fix round 2/5 checkpoint
+
+- Replaced aggregate and per-citation token-overlap support with conservative
+  deterministic alignment for exact text and explicit structured facts:
+  subject/predicate/value, possession polarity, explicit state, and explicit
+  relational forms. Unparsed prose remains unsupported and abstains; this is a
+  deliberate conservative false-negative boundary, not a semantic-entailment
+  claim.
+- Revalidated every reranker result after fusion for authorized workspace,
+  fused-candidate membership, immutable chunk identity/provenance, and duplicate
+  IDs before retrieval return. Added regressions for foreign and unseen
+  same-workspace reranker injections, role-swapped numeric facts, mixed policy
+  negation, and turned-on/turned-off contradiction.
+- Fresh evidence: focused retrieval suite 26 passed; mypy reported no issues in
+  17 source files; the 14-question Asteria benchmark measured Recall@10
+  0.9643 and MRR@10 0.8095; `make verify` passed with 86 backend tests plus
+  frontend lint/type-check/test/build; pinned pre-commit was clean on the
+  closing run after its formatter pass; `npm audit --audit-level=high` found 0
+  vulnerabilities; diff check and filename-only secret scan found no issues.
+- Task 4 remains pending independent review. No push was performed.

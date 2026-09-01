@@ -256,3 +256,104 @@ frontend build: passed
 The PostgreSQL/pgvector implementations are injected SQL boundaries and were verified for SQL shape, parameter binding, decoding, and authorization ordering; no live PostgreSQL/pgvector service was used, by design. Independent controller review and any checkpoint push remain outside this implementer run.
 
 Fix round 1/5 status: all listed review findings are addressed in the local worktree. The Task 4 checkpoint remains pending independent review and has not been pushed.
+
+## Task 4 fix round 2/5 evidence
+
+Systematic debugging identified two root causes from the scoped re-review: claim
+support and per-citation support still treated token presence as entailment, and
+the hybrid boundary trusted reranker output after fusion. The contradiction
+detector also had no structured representation for state phrases such as
+"turned on" and "turned off". The fix uses a narrow deterministic fact grammar
+for explicit subject/predicate/value, possession polarity, state, and relational
+facts. Exact or fully matched structured facts may support a claim; unparsed
+prose is intentionally a conservative false negative and abstains. Reranker
+results are revalidated for workspace, fused-candidate membership, immutable
+chunk identity/provenance, and duplicate IDs before return.
+
+Role-swapped numeric RED:
+
+```text
+$ uv run pytest -q tests/test_retrieval.py::test_role_swapped_numeric_fact_abstains
+F                                                                        [100%]
+E       Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+```
+
+The remaining literal probes were RED before the implementation:
+
+```text
+$ uv run pytest -q tests/test_retrieval.py::test_mixed_negation_does_not_support_the_wrong_policy tests/test_retrieval.py::test_turned_on_and_off_evidence_abstains_as_contradictory tests/test_retrieval.py::test_reranker_foreign_hit_is_rejected_before_context_packing tests/test_retrieval.py::test_reranker_unseen_same_workspace_hit_is_rejected
+FFFF                                                                     [100%]
+E       Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+E       Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+E       Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+E       Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+```
+
+After the minimal implementation and formatter pass, the five new behavior
+probes were GREEN:
+
+```text
+$ uv run pytest -q tests/test_retrieval.py::test_role_swapped_numeric_fact_abstains tests/test_retrieval.py::test_mixed_negation_does_not_support_the_wrong_policy tests/test_retrieval.py::test_turned_on_and_off_evidence_abstains_as_contradictory tests/test_retrieval.py::test_reranker_foreign_hit_is_rejected_before_context_packing tests/test_retrieval.py::test_reranker_unseen_same_workspace_hit_is_rejected
+.....                                                                    [100%]
+```
+
+Focused retrieval and static checks after formatting:
+
+```text
+$ cd backend && uv run pytest -q tests/test_retrieval.py
+..........................                                               [100%]
+$ cd backend && uv run mypy src
+Success: no issues found in 17 source files
+```
+
+Pinned formatter evidence:
+
+```text
+$ uvx --from pre-commit==4.3.0 pre-commit run --all-files
+ruff (legacy alias)......................................................Passed
+ruff format..............................................................Failed
+- hook id: ruff-format
+- files were modified by this hook
+2 files reformatted, 24 files left unchanged
+prettier.................................................................Passed
+
+$ uvx --from pre-commit==4.3.0 pre-commit run --all-files
+ruff (legacy alias)......................................................Passed
+ruff format..............................................................Passed
+prettier.................................................................Passed
+```
+
+The Asteria benchmark threshold test remains GREEN after the fix; final
+repository-gate evidence is recorded below after the last verification run.
+Task 4 remains pending independent review. No push was performed.
+
+Final repository gates:
+
+```text
+$ make verify
+Success: no issues found in 17 source files
+86 passed in 0.60s
+frontend lint: passed
+frontend type-check: passed
+frontend test: 1 passed
+frontend build: passed
+
+$ uv run python <deterministic seeded benchmark script>
+questions=14 recall_at_10=0.9643 mrr_at_10=0.8095
+
+$ npm audit --audit-level=high
+found 0 vulnerabilities
+
+$ uvx --from pre-commit==4.3.0 pre-commit run --all-files
+ruff (legacy alias)......................................................Passed
+ruff format..............................................................Passed
+prettier.................................................................Passed
+
+$ git diff --check
+[no output; exit 0]
+
+$ git ls-files -co --exclude-standard | rg -i '(^|/)(\.env$|.*(secret|credential|token|private.?key).*)'
+[no matching filenames]
+```
+
+The final worktree changes are committed locally and were not pushed.

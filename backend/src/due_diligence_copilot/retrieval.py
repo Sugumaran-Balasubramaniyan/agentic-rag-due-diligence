@@ -7,6 +7,7 @@ import json
 import math
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
@@ -39,54 +40,29 @@ _QUERY_EXPANSIONS = {
     "contradiction": "conflicts",
     "policy": "security",
 }
-_NEGATION_TERMS = frozenset(
+_RELATION_FORMS = {
+    "is greater than": "greater_than",
+    "is less than": "less_than",
+    "is equal to": "equal_to",
+    "is above": "greater_than",
+    "is below": "less_than",
+}
+_STATE_VALUES = frozenset(
     {
-        "absent",
-        "cannot",
-        "lacks",
-        "missing",
-        "never",
-        "no",
-        "none",
-        "not",
-        "without",
-    }
-)
-_POSITIVE_POLARITY = frozenset(
-    {
-        "available",
+        "turned on",
+        "turned off",
         "enabled",
-        "exists",
-        "greater",
-        "has",
-        "higher",
-        "mandatory",
-        "more",
-        "must",
-        "present",
-        "provided",
-        "required",
-    }
-)
-_NEGATIVE_POLARITY = frozenset(
-    {
-        "absent",
-        "below",
         "disabled",
-        "fewer",
-        "less",
-        "lower",
-        "missing",
+        "mandatory",
         "optional",
+        "required",
+        "not required",
+        "available",
         "unavailable",
-        "without",
+        "present",
+        "absent",
     }
 )
-_GREATER_RELATIONS = frozenset(
-    {"above", "exceeds", "greater", "higher", "largest", "more", "over"}
-)
-_LESSER_RELATIONS = frozenset({"below", "fewer", "less", "lower", "smallest", "under"})
-_EQUAL_RELATIONS = frozenset({"equal", "equals", "same"})
 
 
 class RetrievalHit(ContractModel):
@@ -249,34 +225,124 @@ def _expanded_query_terms(query: str) -> tuple[str, ...]:
     return terms + expansions
 
 
-def _is_negated(value: str) -> bool:
-    terms = set(_tokens(value))
-    return bool(terms & _NEGATION_TERMS) or "doesn't" in value.casefold()
+@dataclass(frozen=True)
+class _Fact:
+    """A deliberately narrow fact shape used for deterministic alignment.
+
+    This is not semantic entailment.  Only facts represented by one of the
+    explicit grammars below can support a claim.  Unparsed prose therefore
+    produces a false negative and an abstention instead of a false positive.
+    """
+
+    subject: str
+    predicate: str
+    value: str
+    polarity: str
 
 
-def _polarity(value: str) -> int | None:
-    terms = set(_tokens(value))
-    positive = bool(terms & _POSITIVE_POLARITY)
-    negative = bool(terms & _NEGATIVE_POLARITY) or _is_negated(value)
-    if positive == negative:
-        return None
-    return 1 if positive else -1
+_NUMERIC_FACT = re.compile(
+    r"^(?:(?P<subject>[a-z][a-z0-9&' -]*?)\s+)?"
+    r"(?P<predicate>[a-z][a-z0-9&' -]*?)\s+"
+    r"(?:is|was|were|:|=)\s+"
+    r"(?:(?P<currency>[a-z]{3})\s*)?"
+    r"(?P<number>\d[\d,]*(?:\.\d+)?%?)$",
+    re.IGNORECASE,
+)
+_POSSESSION_FACT = re.compile(
+    r"^(?P<subject>[a-z][a-z0-9&' -]*?)\s+"
+    r"(?P<verb>has no|have no|does not have|doesn't have|has|have)\s+"
+    r"(?P<object>[a-z][a-z0-9&' -]*?)$",
+    re.IGNORECASE,
+)
+_STATE_FACT = re.compile(
+    r"^(?P<subject>[a-z][a-z0-9&' -]*?)\s+"
+    r"(?:is|are)\s+(?P<state>turned on|turned off|enabled|disabled|"
+    r"mandatory|optional|required|not required|available|unavailable|"
+    r"present|absent)(?:\s+(?P<context>[a-z][a-z0-9&' -]*))?$",
+    re.IGNORECASE,
+)
+_RELATIONAL_FACT = re.compile(
+    r"^(?P<subject>[a-z][a-z0-9&' -]*?)\s+"
+    r"(?P<relation>is greater than|is less than|is equal to|is above|is below)\s+"
+    r"(?P<object>[a-z][a-z0-9&' -]*?)$",
+    re.IGNORECASE,
+)
 
 
-def _fact_context(value: str) -> set[str]:
-    terms = set(_tokens(value))
-    return terms - _POSITIVE_POLARITY - _NEGATIVE_POLARITY - _NEGATION_TERMS
+def _fact_part(value: str) -> str:
+    return _normalise(value).strip(" .,;:")
 
 
-def _relation(value: str) -> int | None:
-    terms = set(_tokens(value))
-    relation_groups = (
-        (1, _GREATER_RELATIONS),
-        (-1, _LESSER_RELATIONS),
-        (0, _EQUAL_RELATIONS),
+def _numeric_value(currency: str | None, number: str) -> str:
+    numeric = number.rstrip("%").replace(",", "")
+    unit = "percent" if number.endswith("%") else (currency or "unitless")
+    return f"{unit}:{numeric}"
+
+
+def _extract_fact(sentence: str) -> _Fact | None:
+    text = _fact_part(sentence)
+    numeric = _NUMERIC_FACT.fullmatch(text)
+    if numeric is not None:
+        return _Fact(
+            subject=_fact_part(numeric.group("subject") or ""),
+            predicate=_fact_part(numeric.group("predicate")),
+            value=_numeric_value(numeric.group("currency"), numeric.group("number")),
+            polarity="affirmed",
+        )
+
+    possession = _POSSESSION_FACT.fullmatch(text)
+    if possession is not None:
+        verb = _fact_part(possession.group("verb"))
+        polarity = "negated" if "no" in verb or "not" in verb else "affirmed"
+        return _Fact(
+            subject=_fact_part(possession.group("subject")),
+            predicate="possession",
+            value=_fact_part(possession.group("object"))
+            .removeprefix("a ")
+            .removeprefix("an "),
+            polarity=polarity,
+        )
+
+    relational = _RELATIONAL_FACT.fullmatch(text)
+    if relational is not None:
+        return _Fact(
+            subject=_fact_part(relational.group("subject")),
+            predicate="relation",
+            value=_fact_part(relational.group("object")),
+            polarity=_RELATION_FORMS[_fact_part(relational.group("relation"))],
+        )
+
+    state = _STATE_FACT.fullmatch(text)
+    if state is not None:
+        state_value = _fact_part(state.group("state"))
+        if state_value in _STATE_VALUES:
+            qualifier = _fact_part(state.group("context") or "")
+            return _Fact(
+                subject=_fact_part(state.group("subject")),
+                predicate=f"state:{qualifier}" if qualifier else "state",
+                value=state_value,
+                polarity="affirmed",
+            )
+    return None
+
+
+def _extract_facts(text: str) -> tuple[_Fact, ...]:
+    sentences = re.split(r"(?:[.!?]+|;)\s*", text)
+    return tuple(
+        fact for sentence in sentences if (fact := _extract_fact(sentence)) is not None
     )
-    matches = {polarity for polarity, words in relation_groups if terms & words}
-    return matches.pop() if len(matches) == 1 else None
+
+
+def _alignment_supported(claim_text: str, evidence_text: str) -> bool:
+    claim = _normalise(claim_text)
+    evidence = _normalise(evidence_text)
+    if not claim or not evidence:
+        return False
+    if claim in evidence:
+        return True
+    claim_facts = _extract_facts(claim_text)
+    evidence_facts = set(_extract_facts(evidence_text))
+    return bool(claim_facts) and all(fact in evidence_facts for fact in claim_facts)
 
 
 class DeterministicLexicalRetriever:
@@ -536,7 +602,24 @@ class HybridRetriever:
                 :FINAL_RESULT_COUNT
             ]
         )
-        return self._reranker.rerank(query, fused, limit=FINAL_RESULT_COUNT)
+        reranked = self._reranker.rerank(query, fused, limit=FINAL_RESULT_COUNT)
+        candidate_by_id = {hit.chunk.id: hit.chunk for hit in fused}
+        final_ids: set[str] = set()
+        for hit in reranked:
+            _validate_hit(hit, workspace_id)
+            candidate = candidate_by_id.get(hit.chunk.id)
+            if candidate is None or hit.chunk != candidate:
+                raise RetrievalAbstention(
+                    AbstentionReason.INVALID_RETRIEVAL,
+                    "reranker returned a chunk outside the fused candidates",
+                )
+            if hit.chunk.id in final_ids:
+                raise RetrievalAbstention(
+                    AbstentionReason.INVALID_RETRIEVAL,
+                    "reranker returned duplicate chunk IDs",
+                )
+            final_ids.add(hit.chunk.id)
+        return tuple(reranked[:FINAL_RESULT_COUNT])
 
     def retrieve_outcome(self, context: AccessContext, query: str) -> RetrievalOutcome:
         hits = self.retrieve(context, query)
@@ -587,64 +670,29 @@ def _normalise(value: str) -> str:
 
 
 def _claim_is_supported(claim: Claim, evidence: Sequence[Evidence]) -> bool:
-    evidence_text = " ".join(item.excerpt for item in evidence)
-    if _is_negated(claim.text) != _is_negated(evidence_text):
-        return False
-    claim_relation = _relation(claim.text)
-    if claim_relation is not None and claim_relation != _relation(evidence_text):
-        return False
-    claim_polarity = _polarity(claim.text)
-    if claim_polarity is not None and claim_polarity != _polarity(evidence_text):
-        return False
-    claim_terms = set(_tokens(claim.text))
-    evidence_terms = set(_tokens(evidence_text))
-    if not claim_terms or not evidence_terms:
-        return False
-    claim_numbers = {
-        (float(value.replace(",", "").rstrip("%")), value.endswith("%"))
-        for value in _NUMBER.findall(claim.text)
-    }
-    evidence_numbers = {
-        (float(value.replace(",", "").rstrip("%")), value.endswith("%"))
-        for value in _NUMBER.findall(evidence_text)
-    }
-    if not claim_numbers <= evidence_numbers:
-        return False
-    return claim_terms <= evidence_terms
+    return _alignment_supported(claim.text, " ".join(item.excerpt for item in evidence))
 
 
 def _citation_supports_claim(claim: Claim, citation: Evidence) -> bool:
-    claim_terms = set(_tokens(claim.text))
-    citation_terms = set(_tokens(citation.excerpt))
-    overlap = claim_terms & citation_terms
-    if not claim_terms:
-        return False
-    if len(overlap) < 2 and not (
-        _normalise(claim.text) in _normalise(citation.excerpt)
-        or _normalise(citation.excerpt) in _normalise(claim.text)
-    ):
-        return False
-    return True
+    return _alignment_supported(claim.text, citation.excerpt)
 
 
 def _has_material_contradiction(evidence: Sequence[Evidence]) -> bool:
-    numeric_pattern = re.compile(r"\d[\d,.]*(?:%|[a-z]+)?", re.IGNORECASE)
-    for position, left in enumerate(evidence):
-        left_numbers = set(numeric_pattern.findall(left.excerpt.casefold()))
-        left_context = _fact_context(numeric_pattern.sub(" ", left.excerpt))
-        for right in evidence[position + 1 :]:
-            right_numbers = set(numeric_pattern.findall(right.excerpt.casefold()))
-            right_context = _fact_context(numeric_pattern.sub(" ", right.excerpt))
-            numeric_conflict = bool(left_numbers or right_numbers) and (
-                left_numbers != right_numbers
+    facts = [fact for item in evidence for fact in _extract_facts(item.excerpt)]
+    for position, left in enumerate(facts):
+        for right in facts[position + 1 :]:
+            same_subject_and_predicate = (
+                left.subject == right.subject and left.predicate == right.predicate
             )
-            polarity_conflict = (
-                _polarity(left.excerpt) is not None
-                and _polarity(right.excerpt) is not None
-                and _polarity(left.excerpt) != _polarity(right.excerpt)
+            same_possession = (
+                left.predicate == "possession" and left.value == right.value
             )
-            if (numeric_conflict and len(left_context & right_context) >= 2) or (
-                polarity_conflict and len(left_context & right_context) >= 1
+            if same_subject_and_predicate and (
+                (
+                    left.predicate != "possession"
+                    and (left.value != right.value or left.polarity != right.polarity)
+                )
+                or (same_possession and left.polarity != right.polarity)
             ):
                 return True
     return False
