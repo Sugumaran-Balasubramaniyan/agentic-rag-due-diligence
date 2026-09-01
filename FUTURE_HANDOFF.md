@@ -143,3 +143,21 @@
   closing run after its formatter pass; `npm audit --audit-level=high` found 0
   vulnerabilities; diff check and filename-only secret scan found no issues.
 - Task 4 remains pending independent review. No push was performed.
+
+## Task 4 fix round 3/5 checkpoint
+
+- Added a deep pre-reranker snapshot of each fused chunk. Final reranker output
+  is checked against the snapshot for workspace, fused membership, immutable
+  identity/provenance/text, and duplicate IDs; only ordering/rank and score
+  changes remain permitted.
+- Contradiction assessment now precedes exact-substring support. Explicit
+  comma/`but`/`and`/`or` clauses are parsed, including a narrow elided state
+  continuation such as `turned on and turned off`, and contradictory state or
+  polarity facts abstain.
+- Fresh evidence: mutation and conjunction regressions are GREEN; focused
+  retrieval suite is 30 passed; Ruff and mypy are clean; the 14-question
+  benchmark measured Recall@10 0.9643 and MRR@10 0.8095; `make verify` passed
+  with 90 backend tests plus frontend lint/type-check/test/build; pinned
+  pre-commit passed cleanly; `npm audit --audit-level=high` found 0
+  vulnerabilities; diff check and filename-only secret scan found no issues.
+- Task 4 remains pending independent review. No push was performed.

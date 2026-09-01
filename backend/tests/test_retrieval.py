@@ -1306,3 +1306,118 @@ def test_reranker_unseen_same_workspace_hit_is_rejected() -> None:
         ).retrieve(AUTHORIZED, "evidence")
 
     assert failure.value.reason == AbstentionReason.INVALID_RETRIEVAL
+
+
+def test_reranker_in_place_chunk_mutation_is_rejected() -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        HybridRetriever,
+        RetrievalAbstention,
+    )
+
+    chunk = Chunk(
+        id="mutable",
+        workspace_id="workspace-a",
+        document_id="doc-1",
+        ordinal=0,
+        text="authoritative evidence",
+        content_hash="a" * 64,
+        block_id="block-1",
+        source_location={
+            "document_id": "doc-1",
+            "path": "evidence.md",
+            "line_start": 1,
+        },
+    )
+    candidate = RetrievalHit(chunk=chunk, score=1.0, rank=1)
+
+    class StubRetriever:
+        def retrieve(
+            self, context: AccessContext, query: str, *, limit: int = 20
+        ) -> tuple[RetrievalHit, ...]:
+            del context, query, limit
+            return (candidate,)
+
+    class MutatingReranker:
+        def rerank(
+            self, query: str, candidates: tuple[RetrievalHit, ...], *, limit: int
+        ) -> tuple[RetrievalHit, ...]:
+            del query, limit
+            candidates[0].chunk.text = "tampered evidence"
+            candidates[0].chunk.source_location.path = "tampered.md"
+            return candidates
+
+    with pytest.raises(RetrievalAbstention) as failure:
+        HybridRetriever(
+            StubRetriever(), StubRetriever(), reranker=MutatingReranker()
+        ).retrieve(AUTHORIZED, "evidence")
+
+    assert failure.value.reason == AbstentionReason.INVALID_RETRIEVAL
+
+
+@pytest.mark.parametrize(
+    "conjunction",
+    (", but ", " and ", " or "),
+)
+def test_exact_claim_substring_does_not_hide_contradictory_clause(
+    conjunction: str,
+) -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        CitationVerifier,
+        Claim,
+        RetrievalAbstention,
+    )
+
+    claim_text = "The monitoring control is turned on"
+    text = claim_text + conjunction + "turned off."
+    chunk = Chunk(
+        id="control",
+        workspace_id="workspace-a",
+        document_id="doc-1",
+        ordinal=0,
+        text=text,
+        content_hash="a" * 64,
+        block_id="block-control",
+        source_location={
+            "document_id": "doc-1",
+            "path": "controls.md",
+            "line_start": 1,
+        },
+    )
+    citation = Evidence(
+        id="evidence-control",
+        document_id="doc-1",
+        display_name="Controls",
+        source_location=chunk.source_location,
+        excerpt=text,
+        chunk_id=chunk.id,
+    )
+    repository = InMemoryDocumentRepository()
+    repository.save(
+        "workspace-a",
+        DocumentRecord(
+            id="doc-1",
+            display_name="Controls",
+            document_type=DocumentType.SECURITY_POLICY,
+            path="controls.md",
+            media_type="text/markdown",
+            sha256="b" * 64,
+            byte_length=1,
+        ),
+    )
+
+    with pytest.raises(RetrievalAbstention) as failure:
+        CitationVerifier(repository).verify(
+            AUTHORIZED,
+            (
+                Claim(
+                    id="claim-control",
+                    text=claim_text,
+                    evidence=(citation,),
+                ),
+            ),
+            (RetrievalHit(chunk=chunk, score=1.0, rank=1),),
+        )
+
+    assert failure.value.reason == AbstentionReason.CONTRADICTORY_EVIDENCE

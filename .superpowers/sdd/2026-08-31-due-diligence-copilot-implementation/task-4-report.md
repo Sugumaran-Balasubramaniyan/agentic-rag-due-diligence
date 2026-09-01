@@ -357,3 +357,79 @@ $ git ls-files -co --exclude-standard | rg -i '(^|/)(\.env$|.*(secret|credential
 ```
 
 The final worktree changes are committed locally and were not pushed.
+
+## Task 4 fix round 3/5 evidence
+
+Systematic debugging traced the reranker defect to a shallow nested-model alias:
+the fused `RetrievalHit` retained a mutable `Chunk`, so a reranker could mutate
+text and source provenance before the post-call membership map was built. The
+contradiction defect had two parts: conjunction clauses were not split, and
+exact-substring alignment could succeed without first assessing the evidence
+facts. The fix snapshots each fused chunk deeply before invoking the reranker,
+then compares every returned chunk against that snapshot. It also parses
+explicit comma/`but`/`and`/`or` clauses, supports a narrow elided state
+continuation, and evaluates material contradiction before exact support.
+
+In-place reranker mutation RED:
+
+```text
+$ uv run pytest -q tests/test_retrieval.py::test_reranker_in_place_chunk_mutation_is_rejected
+F                                                                        [100%]
+E       Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+```
+
+Exact-substring contradiction RED before compound-clause parsing and
+contradiction-first alignment:
+
+```text
+$ uv run pytest -q tests/test_retrieval.py::test_exact_claim_substring_does_not_hide_contradictory_clause
+FFF                                                                      [100%]
+E       Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+E       Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+E       Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+```
+
+After the minimal fixes, the bounded probes were GREEN:
+
+```text
+$ uv run pytest -q tests/test_retrieval.py::test_reranker_in_place_chunk_mutation_is_rejected tests/test_retrieval.py::test_exact_claim_substring_does_not_hide_contradictory_clause
+....                                                                     [100%]
+$ uv run pytest -q tests/test_retrieval.py
+..............................                                           [100%]
+```
+
+The final retrieval suite contains 30 passing tests, including all prior
+authority, tenant, citation, contradiction, empty-outcome, and benchmark
+regressions. Ruff and mypy also passed after the round-3 changes. Final full
+repository-gate output is appended after the closing verification run.
+
+Final round-3 repository gates:
+
+```text
+$ make verify
+Success: no issues found in 17 source files
+90 passed in 0.58s
+frontend lint: passed
+frontend type-check: passed
+frontend test: 1 passed
+frontend build: passed
+
+$ uv run python <deterministic seeded benchmark script>
+questions=14 recall_at_10=0.9643 mrr_at_10=0.8095
+
+$ npm audit --audit-level=high
+found 0 vulnerabilities
+
+$ uvx --from pre-commit==4.3.0 pre-commit run --all-files
+ruff (legacy alias)......................................................Passed
+ruff format..............................................................Passed
+prettier.................................................................Passed
+
+$ git diff --check
+[no output; exit 0]
+
+$ git ls-files -co --exclude-standard | rg -i '(^|/)(\.env$|.*(secret|credential|token|private.?key).*)'
+[no matching filenames]
+```
+
+Round-3 changes are ready for local commit only. No push was performed.

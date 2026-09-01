@@ -261,6 +261,11 @@ _STATE_FACT = re.compile(
     r"present|absent)(?:\s+(?P<context>[a-z][a-z0-9&' -]*))?$",
     re.IGNORECASE,
 )
+_BARE_STATE = re.compile(
+    r"^(?P<state>turned on|turned off|enabled|disabled|mandatory|optional|"
+    r"required|not required|available|unavailable|present|absent)$",
+    re.IGNORECASE,
+)
 _RELATIONAL_FACT = re.compile(
     r"^(?P<subject>[a-z][a-z0-9&' -]*?)\s+"
     r"(?P<relation>is greater than|is less than|is equal to|is above|is below)\s+"
@@ -327,10 +332,26 @@ def _extract_fact(sentence: str) -> _Fact | None:
 
 
 def _extract_facts(text: str) -> tuple[_Fact, ...]:
-    sentences = re.split(r"(?:[.!?]+|;)\s*", text)
-    return tuple(
-        fact for sentence in sentences if (fact := _extract_fact(sentence)) is not None
+    sentences = re.split(
+        r"(?:[.!?]+|;|,?\s+(?:but|and|or)\s+)\s*", text, flags=re.IGNORECASE
     )
+    facts: list[_Fact] = []
+    for sentence in sentences:
+        fact = _extract_fact(sentence)
+        if fact is None and facts:
+            continuation = _BARE_STATE.fullmatch(_fact_part(sentence))
+            if continuation is not None:
+                prior = facts[-1]
+                if prior.predicate.startswith("state"):
+                    fact = _Fact(
+                        subject=prior.subject,
+                        predicate=prior.predicate,
+                        value=_fact_part(continuation.group("state")),
+                        polarity="affirmed",
+                    )
+        if fact is not None:
+            facts.append(fact)
+    return tuple(facts)
 
 
 def _alignment_supported(claim_text: str, evidence_text: str) -> bool:
@@ -338,11 +359,15 @@ def _alignment_supported(claim_text: str, evidence_text: str) -> bool:
     evidence = _normalise(evidence_text)
     if not claim or not evidence:
         return False
+    evidence_facts = _extract_facts(evidence_text)
+    if _facts_have_material_contradiction(evidence_facts):
+        return False
     if claim in evidence:
         return True
     claim_facts = _extract_facts(claim_text)
-    evidence_facts = set(_extract_facts(evidence_text))
-    return bool(claim_facts) and all(fact in evidence_facts for fact in claim_facts)
+    return bool(claim_facts) and all(
+        fact in set(evidence_facts) for fact in claim_facts
+    )
 
 
 class DeterministicLexicalRetriever:
@@ -602,12 +627,14 @@ class HybridRetriever:
                 :FINAL_RESULT_COUNT
             ]
         )
+        candidate_snapshots = {
+            hit.chunk.id: hit.chunk.model_copy(deep=True) for hit in fused
+        }
         reranked = self._reranker.rerank(query, fused, limit=FINAL_RESULT_COUNT)
-        candidate_by_id = {hit.chunk.id: hit.chunk for hit in fused}
         final_ids: set[str] = set()
         for hit in reranked:
             _validate_hit(hit, workspace_id)
-            candidate = candidate_by_id.get(hit.chunk.id)
+            candidate = candidate_snapshots.get(hit.chunk.id)
             if candidate is None or hit.chunk != candidate:
                 raise RetrievalAbstention(
                     AbstentionReason.INVALID_RETRIEVAL,
@@ -678,7 +705,11 @@ def _citation_supports_claim(claim: Claim, citation: Evidence) -> bool:
 
 
 def _has_material_contradiction(evidence: Sequence[Evidence]) -> bool:
-    facts = [fact for item in evidence for fact in _extract_facts(item.excerpt)]
+    facts = tuple(fact for item in evidence for fact in _extract_facts(item.excerpt))
+    return _facts_have_material_contradiction(facts)
+
+
+def _facts_have_material_contradiction(facts: Sequence[_Fact]) -> bool:
     for position, left in enumerate(facts):
         for right in facts[position + 1 :]:
             same_subject_and_predicate = (
