@@ -101,7 +101,7 @@ ToolArguments = (
 class ToolCall(ContractModel):
     tool_id: ApprovedToolId
     arguments: ToolArguments
-    evidence: tuple[Evidence, ...] = Field(min_length=1)
+    evidence: tuple[Evidence, ...] = Field(min_length=1, max_length=10)
 
     @model_validator(mode="after")
     def validate_evidence_references(self) -> ToolCall:
@@ -128,7 +128,7 @@ class FinancialMetricResult(ContractModel):
     unit: FinancialUnit
     claim: str | None = Field(default=None, max_length=2000)
     evidence: tuple[Evidence, ...] = Field(default=(), max_length=10)
-    primary_evidence: tuple[Evidence, ...] = ()
+    primary_evidence: tuple[Evidence, ...] = Field(default=(), max_length=10)
     reason: ToolAbstentionReason | None = None
 
 
@@ -138,8 +138,8 @@ class ContractClauseResult(ContractModel):
     status: ToolResultStatus
     clause: ContractClause
     claim: str | None = Field(default=None, max_length=2000)
-    evidence: tuple[Evidence, ...] = ()
-    primary_evidence: tuple[Evidence, ...] = ()
+    evidence: tuple[Evidence, ...] = Field(default=(), max_length=10)
+    primary_evidence: tuple[Evidence, ...] = Field(default=(), max_length=10)
     reason: ToolAbstentionReason | None = None
 
 
@@ -147,10 +147,10 @@ class ContradictionResult(ContractModel):
     id: str = Field(default="unassigned-tool-result", min_length=1, max_length=128)
     tool_id: ApprovedToolId = ApprovedToolId.DETECT_CONTRADICTIONS
     status: ToolResultStatus
-    subject: str
+    subject: str = Field(min_length=1, max_length=256)
     claim: str | None = Field(default=None, max_length=2000)
-    evidence: tuple[Evidence, ...] = ()
-    primary_evidence: tuple[Evidence, ...] = ()
+    evidence: tuple[Evidence, ...] = Field(default=(), max_length=10)
+    primary_evidence: tuple[Evidence, ...] = Field(default=(), max_length=10)
     reason: ToolAbstentionReason | None = None
 
 
@@ -158,10 +158,10 @@ class MissingDocumentResult(ContractModel):
     id: str = Field(default="unassigned-tool-result", min_length=1, max_length=128)
     tool_id: ApprovedToolId = ApprovedToolId.ANALYZE_MISSING_DOCUMENTS
     status: ToolResultStatus
-    document_name: str
+    document_name: str = Field(min_length=1, max_length=256)
     claim: str | None = Field(default=None, max_length=2000)
-    evidence: tuple[Evidence, ...] = ()
-    primary_evidence: tuple[Evidence, ...] = ()
+    evidence: tuple[Evidence, ...] = Field(default=(), max_length=10)
+    primary_evidence: tuple[Evidence, ...] = Field(default=(), max_length=10)
     reason: ToolAbstentionReason | None = None
 
 

@@ -255,3 +255,38 @@ The fix adds workflow provenance authentication and independent finding/result/e
 Focused GREEN: `timeout --signal=TERM 90s uv run pytest -W error tests/test_agentic_fix_round2.py tests/test_agentic_fix_round1.py tests/test_agentic_tools.py tests/test_agentic_workflow.py tests/test_agentic_evaluation.py -q` => `76 passed`; full warning-as-error suite => `172 passed`. `make verify` passed (`172 passed in 2.06s`, frontend lint/type-check/test/build passed); pinned pre-commit passed; frontend `npm audit --audit-level=high` found 0 vulnerabilities; literal routing evaluation was `scenarios=14 correct=14 accuracy=1.0000 target_met=True`.
 
 Current imports produce zero warnings under `pytest -W error`; no warning suppression was added. Deferred minor concerns remain event-store defensive-copy semantics and timer start/hard-wall timing. Durable database persistence remains Task 6. This checkpoint does not claim external acceptance or live-provider quality.
+
+
+## Fix round 3/5 evidence
+
+Started from committed `d80df01`. The first round-3 focused regression run was intentionally RED:
+
+```text
+ --signal=TERM 90s uv run pytest -W error tests/test_agentic_fix_round3.py -q
+3 failed, 6 passed
+```
+
+The failures exposed tool/result model confusion, duplicate finding IDs, and call/result evidence binding. The final fix enforces immutable approved-tool to result-class mapping, bounded and revalidated nested outputs, serialized tool-output accounting, primary-evidence constraints, canonical evidence fingerprints through approval provenance, validated verifier metrics, and injectable shared provenance keys.
+
+Final GREEN evidence:
+
+```text
+ --signal=TERM 120s uv run pytest -W error tests/test_agentic_fix_round3.py tests/test_agentic_fix_round2.py tests/test_agentic_fix_round1.py tests/test_agentic_tools.py tests/test_agentic_workflow.py tests/test_agentic_evaluation.py -q
+79 passed
+
+ verify
+181 passed in 1.92s
+ruff and mypy: passed
+frontend lint, type-check, test, and build: passed
+
+ run python -c ...evaluate_tool_routing...
+scenarios=14 correct=14 accuracy=1.0000 target_met=True
+
+ --from pre-commit==4.3.0 pre-commit run --all-files
+ruff, ruff format, prettier: Passed
+
+ audit --audit-level=high
+found 0 vulnerabilities
+```
+
+Warnings remain zero under `pytest -W error`; no suppression was added. The provenance key is injectable for shared deployments and defaults to a process-local key for the pre-Task-6 in-memory boundary; durable key management and database persistence remain Task 6. Event-store defensive copies and elapsed timer start/hard-wall timing remain deferred minor concerns. This is a local checkpoint and does not claim external acceptance or live-provider quality.

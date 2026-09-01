@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import math
 import secrets
 from collections.abc import Callable
@@ -14,7 +15,7 @@ from typing import Protocol, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
 from .adapters import InMemoryAnalysisEventStore
 from .agentic_tools import (
@@ -55,6 +56,7 @@ from .ingestion_contracts import AccessContext
 from .ports import AnalysisEventStore, DocumentRepository
 from .retrieval import (
     AbstentionReason,
+    CitationVerification,
     CitationVerifier,
     Claim,
     ContextPack,
@@ -512,9 +514,18 @@ class _InvariantFailure(Exception):
 _PROVENANCE_KEY = secrets.token_bytes(32)
 
 
-def _provenance_token(result: InvestigationResult) -> str:
+def _provenance_token(result: InvestigationResult, key: bytes = _PROVENANCE_KEY) -> str:
     payload = result.model_dump_json(exclude={"provenance_token"})
-    return hmac.new(_PROVENANCE_KEY, payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
+
+
+def _evidence_fingerprints(
+    evidence: tuple[Evidence, ...] | list[Evidence],
+) -> tuple[str, ...]:
+    return tuple(
+        json.dumps(item.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        for item in evidence
+    )
 
 
 def _estimated_output_tokens(value: ContractModel) -> int:
@@ -800,6 +811,7 @@ class BoundedInvestigationWorkflow:
         budgets: InvestigationBudgets | None = None,
         clock: Clock | None = None,
         token_accounting: TokenAccounting | None = None,
+        provenance_key: bytes | None = None,
     ) -> None:
         self.retriever = retriever
         self.documents = documents
@@ -816,6 +828,7 @@ class BoundedInvestigationWorkflow:
             self.budgets.model_dump()
         )
         self.clock = clock or SystemClock()
+        self.provenance_key = provenance_key or _PROVENANCE_KEY
         self.token_accounting = token_accounting or DeterministicTokenAccounting()
 
     def run(
@@ -920,7 +933,9 @@ class BoundedInvestigationWorkflow:
             abstention_reason=final.get("abstention_reason"),
             budget=ledger.usage(),
         )
-        return result.model_copy(update={"provenance_token": _provenance_token(result)})
+        return result.model_copy(
+            update={"provenance_token": _provenance_token(result, self.provenance_key)}
+        )
 
     def build_investigation_graph(
         self, runtime: _Runtime
@@ -1035,20 +1050,40 @@ class BoundedInvestigationWorkflow:
                     runtime.ledger.tool_call()
                     call = self._build_tool_call(plan, tool_id, evidence)
                     result = runtime.tools.execute(call)
-                    if not isinstance(
-                        result,
-                        FinancialMetricResult
-                        | ContractClauseResult
-                        | ContradictionResult
-                        | MissingDocumentResult,
-                    ):
+                    expected_result_types: dict[ApprovedToolId, type[ContractModel]] = {
+                        ApprovedToolId.CALCULATE_FINANCIAL_METRIC: (
+                            FinancialMetricResult
+                        ),
+                        ApprovedToolId.INSPECT_CONTRACT_CLAUSE: ContractClauseResult,
+                        ApprovedToolId.DETECT_CONTRADICTIONS: ContradictionResult,
+                        ApprovedToolId.ANALYZE_MISSING_DOCUMENTS: MissingDocumentResult,
+                    }
+                    expected_result_type = expected_result_types[tool_id]
+                    if not isinstance(result, expected_result_type):
                         raise _InvariantFailure()
-                    result = type(result).model_validate(result.model_dump())
-                    result = result.model_copy(
-                        update={"id": f"tool-result-{len(results) + 1}"}
+                    result = cast(
+                        ToolResult,
+                        expected_result_type.model_validate(result.model_dump()),
                     )
                     if result.tool_id is not tool_id:
                         raise _InvariantFailure()
+                    if (
+                        result.status is ToolResultStatus.SUCCEEDED
+                        and not result.evidence
+                    ):
+                        raise _InvariantFailure()
+                    if not set(item.id for item in result.evidence) <= set(
+                        item.id for item in call.evidence
+                    ):
+                        raise _InvariantFailure()
+                    if not set(item.id for item in result.primary_evidence) <= set(
+                        item.id for item in result.evidence
+                    ):
+                        raise _InvariantFailure()
+                    runtime.ledger.model_call(_estimated_output_tokens(result))
+                    result = result.model_copy(
+                        update={"id": f"tool-result-{len(results) + 1}"}
+                    )
                     calls.append(call)
                     results.append(result)
                     if result.status is ToolResultStatus.ABSTAINED:
@@ -1087,6 +1122,10 @@ class BoundedInvestigationWorkflow:
                     for result in results
                     if result.status is ToolResultStatus.SUCCEEDED
                 }
+                if len({draft.id for draft in generated.claims}) != len(
+                    generated.claims
+                ):
+                    raise _InvariantFailure()
                 claims = tuple(
                     Claim(
                         id=draft.id,
@@ -1107,13 +1146,33 @@ class BoundedInvestigationWorkflow:
                     for draft in generated.claims
                 )
                 try:
-                    verification = runtime.verifier.verify(
+                    raw_verification = runtime.verifier.verify(
                         runtime.context, claims, retrieved
                     )
-                except RetrievalAbstention as abstention:
-                    raise _SafeAbstention(abstention.reason) from abstention
-                if verification.claims_verified != len(generated.claims):
-                    raise _InvariantFailure()
+                    verification = CitationVerification.model_validate(
+                        raw_verification.model_dump()
+                        if isinstance(raw_verification, CitationVerification)
+                        else raw_verification
+                    )
+                except (
+                    RetrievalAbstention,
+                    ValidationError,
+                    AttributeError,
+                    TypeError,
+                ) as abstention:
+                    if isinstance(abstention, RetrievalAbstention):
+                        raise _SafeAbstention(abstention.reason) from abstention
+                    raise _SafeAbstention(
+                        AbstentionReason.UNSUPPORTED_EVIDENCE
+                    ) from abstention
+                except Exception as exc:
+                    raise _InvariantFailure() from exc
+                if (
+                    verification.claims_verified != len(generated.claims)
+                    or verification.citation_precision != 1.0
+                    or verification.citation_coverage != 1.0
+                ):
+                    raise _SafeAbstention(AbstentionReason.UNSUPPORTED_EVIDENCE)
                 findings = tuple(
                     Finding(
                         id=draft.id.replace("claim-", "finding-", 1),
@@ -1359,9 +1418,11 @@ class ApprovalBoundary:
         *,
         event_store: AnalysisEventStore | None = None,
         clock: Clock | None = None,
+        provenance_key: bytes | None = None,
     ) -> None:
         self.event_store = event_store
         self.clock = clock or SystemClock()
+        self.provenance_key = provenance_key or _PROVENANCE_KEY
 
     def decide(
         self, result: InvestigationResult, decision: ApprovalDecision
@@ -1442,10 +1503,9 @@ class ApprovalBoundary:
             completed=True,
         )
 
-    @staticmethod
-    def _has_valid_workflow_provenance(result: InvestigationResult) -> bool:
+    def _has_valid_workflow_provenance(self, result: InvestigationResult) -> bool:
         if not result.provenance_token or not hmac.compare_digest(
-            result.provenance_token, _provenance_token(result)
+            result.provenance_token, _provenance_token(result, self.provenance_key)
         ):
             return False
         successful = {
@@ -1458,6 +1518,15 @@ class ApprovalBoundary:
             for tool_result in result.tool_results
             if tool_result.status is ToolResultStatus.SUCCEEDED
         }
+        if len(result.tool_calls) != len(result.tool_results) or any(
+            call.tool_id is not tool_result.tool_id
+            or not set(_evidence_fingerprints(tool_result.evidence))
+            <= set(_evidence_fingerprints(call.evidence))
+            for call, tool_result in zip(
+                result.tool_calls, result.tool_results, strict=True
+            )
+        ):
+            return False
         findings = result.analysis.findings
         finding_ids = {finding.tool_result_id for finding in findings}
         if (
@@ -1469,13 +1538,10 @@ class ApprovalBoundary:
                 or finding.tool_result_id is None
                 or not finding.evidence
                 or finding.tool_result_id not in tool_results_by_id
-                or any(
-                    finding_evidence.id
-                    not in {
-                        item.id
-                        for item in tool_results_by_id[finding.tool_result_id].evidence
-                    }
-                    for finding_evidence in finding.evidence
+                or _evidence_fingerprints(finding.evidence)
+                != _evidence_fingerprints(
+                    tool_results_by_id[finding.tool_result_id].primary_evidence
+                    or tool_results_by_id[finding.tool_result_id].evidence
                 )
                 for finding in findings
             )

@@ -265,3 +265,10 @@
 Started from committed `8b384fa`. Round-2 regressions cover forged approval provenance, contradiction-category bypass, mutable budgets, nested provider bounds and actual serialized token accounting, and canonical routing-manifest integrity. Verification is green: focused Task 5 suite `76 passed`; full warning-as-error backend suite `172 passed`; `make verify` passed; pinned pre-commit passed; frontend audit found 0 vulnerabilities; literal routing is `14/14`, accuracy `1.0000`.
 
 Critical and important findings in this fix request are addressed. Minor event-store defensive-copy and timer start/hard-wall timing concerns remain explicitly deferred. This checkpoint does not claim external acceptance, live-provider quality, or Task 6 durable database integration.
+
+
+### Task 5 fix round 3/5 checkpoint (2026-09-01)
+
+Started from `d80df01`. Round-3 regressions and fixes cover exact tool/result class mapping, unique finding correspondence, nested output limits and output-size token accounting, canonical evidence lineage into approval, verifier output validation, immutable routing expectations, and injected shared provenance keys. Verification: focused Task 5 suite `79 passed`; full `make verify` `181 passed`; pinned pre-commit passed; frontend audit found 0 vulnerabilities; routing `14/14`, accuracy `1.0000`.
+
+Minor event-store defensive-copy and elapsed timer start/hard-wall timing concerns remain deferred. The default provenance key is process-local until a shared durable secret boundary is supplied; Task 6 owns durable persistence/key integration. No external acceptance or live-provider claim is made.
