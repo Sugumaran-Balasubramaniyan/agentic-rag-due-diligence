@@ -7,7 +7,12 @@ from due_diligence_copilot.adapters import (
     InMemoryDocumentRepository,
     InMemoryObjectStore,
 )
-from due_diligence_copilot.domain import DocumentRecord, DocumentType, Evidence
+from due_diligence_copilot.domain import (
+    DocumentRecord,
+    DocumentType,
+    Evidence,
+    SourceLocation,
+)
 from due_diligence_copilot.ingestion_contracts import (
     AccessContext,
     Chunk,
@@ -377,7 +382,13 @@ def test_materially_contradictory_citations_abstain() -> None:
     with pytest.raises(RetrievalAbstention) as failure:
         CitationVerifier().verify(
             AUTHORIZED,
-            (Claim(id="claim-1", text="Revenue is documented.", evidence=citations),),
+            (
+                Claim(
+                    id="claim-1",
+                    text="Revenue is EUR 10,000,000.",
+                    evidence=citations,
+                ),
+            ),
             (
                 RetrievalHit(chunk=first, score=1.0, rank=1),
                 RetrievalHit(chunk=second, score=0.9, rank=2),
@@ -474,3 +485,527 @@ def test_retrieval_returns_zero_evidence_from_another_workspace() -> None:
     )
 
     assert hits == ()
+
+
+def test_false_negated_claim_abstains_against_positive_evidence() -> None:
+    from due_diligence_copilot.retrieval import (
+        CitationVerifier,
+        Claim,
+        RetrievalAbstention,
+    )
+
+    chunk = Chunk(
+        id="policy",
+        workspace_id="workspace-a",
+        document_id="doc-1",
+        ordinal=0,
+        text="Asteria has a security policy.",
+        content_hash="a" * 64,
+        block_id="block-1",
+        source_location={
+            "document_id": "doc-1",
+            "path": "policy.md",
+            "line_start": 1,
+        },
+    )
+    citation = Evidence(
+        id="evidence-policy",
+        document_id="doc-1",
+        display_name="Security Policy",
+        source_location=chunk.source_location,
+        excerpt=chunk.text,
+        chunk_id=chunk.id,
+    )
+
+    with pytest.raises(RetrievalAbstention):
+        CitationVerifier().verify(
+            AUTHORIZED,
+            (
+                Claim(
+                    id="claim-policy",
+                    text="Asteria has no security policy.",
+                    evidence=(citation,),
+                ),
+            ),
+            (RetrievalHit(chunk=chunk, score=1.0, rank=1),),
+        )
+
+
+def test_hybrid_rejects_foreign_delegate_hits_before_fusion() -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        HybridRetriever,
+        RetrievalAbstention,
+    )
+
+    foreign = Chunk(
+        id="foreign",
+        workspace_id="workspace-b",
+        document_id="doc-b",
+        ordinal=0,
+        text="Workspace B evidence.",
+        content_hash="a" * 64,
+        block_id="block-b",
+        source_location={
+            "document_id": "doc-b",
+            "path": "foreign.md",
+            "line_start": 1,
+        },
+    )
+
+    class MaliciousRetriever:
+        def retrieve(
+            self, context: AccessContext, query: str, *, limit: int = 20
+        ) -> tuple[RetrievalHit, ...]:
+            del context, query, limit
+            return (RetrievalHit(chunk=foreign, score=1.0, rank=1),)
+
+    class RerankerThatMustNotRun:
+        def rerank(
+            self,
+            query: str,
+            candidates: tuple[RetrievalHit, ...],
+            *,
+            limit: int,
+        ) -> tuple[RetrievalHit, ...]:
+            del query, candidates, limit
+            raise AssertionError("foreign evidence reached reranking")
+
+    with pytest.raises(RetrievalAbstention) as failure:
+        HybridRetriever(
+            MaliciousRetriever(),
+            MaliciousRetriever(),
+            RerankerThatMustNotRun(),
+        ).retrieve(AUTHORIZED, "evidence")
+
+    assert failure.value.reason == AbstentionReason.FOREIGN_WORKSPACE
+
+
+def test_textual_polarity_contradiction_abstains_without_numeric_values() -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        CitationVerifier,
+        Claim,
+        RetrievalAbstention,
+    )
+
+    def make_chunk(chunk_id: str, text: str, line: int) -> Chunk:
+        return Chunk(
+            id=chunk_id,
+            workspace_id="workspace-a",
+            document_id="doc-1",
+            ordinal=line,
+            text=text,
+            content_hash="a" * 64,
+            block_id=f"block-{chunk_id}",
+            source_location={
+                "document_id": "doc-1",
+                "path": "policy.md",
+                "line_start": line,
+            },
+        )
+
+    first = make_chunk("mandatory", "MFA is mandatory for production access.", 1)
+    second = make_chunk("optional", "MFA is optional for production access.", 2)
+    citations = tuple(
+        Evidence(
+            id=f"evidence-{chunk.id}",
+            document_id="doc-1",
+            display_name="Security Policy",
+            source_location=chunk.source_location,
+            excerpt=chunk.text,
+            chunk_id=chunk.id,
+        )
+        for chunk in (first, second)
+    )
+
+    with pytest.raises(RetrievalAbstention) as failure:
+        CitationVerifier().verify(
+            AUTHORIZED,
+            (
+                Claim(
+                    id="claim-mfa",
+                    text="MFA is mandatory for production access.",
+                    evidence=citations,
+                ),
+            ),
+            (
+                RetrievalHit(chunk=first, score=1.0, rank=1),
+                RetrievalHit(chunk=second, score=0.9, rank=2),
+            ),
+        )
+
+    assert failure.value.reason == AbstentionReason.CONTRADICTORY_EVIDENCE
+
+
+def test_relational_contradiction_abstains_without_numeric_values() -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        CitationVerifier,
+        Claim,
+        RetrievalAbstention,
+    )
+
+    def make_chunk(chunk_id: str, text: str, line: int) -> Chunk:
+        return Chunk(
+            id=chunk_id,
+            workspace_id="workspace-a",
+            document_id="doc-1",
+            ordinal=line,
+            text=text,
+            content_hash="a" * 64,
+            block_id=f"block-{chunk_id}",
+            source_location={
+                "document_id": "doc-1",
+                "path": "financial.md",
+                "line_start": line,
+            },
+        )
+
+    first = make_chunk("greater", "Revenue is greater than expenses.", 1)
+    second = make_chunk("less", "Revenue is less than expenses.", 2)
+    citations = tuple(
+        Evidence(
+            id=f"evidence-{chunk.id}",
+            document_id="doc-1",
+            display_name="Financial Summary",
+            source_location=chunk.source_location,
+            excerpt=chunk.text,
+            chunk_id=chunk.id,
+        )
+        for chunk in (first, second)
+    )
+
+    with pytest.raises(RetrievalAbstention) as failure:
+        CitationVerifier().verify(
+            AUTHORIZED,
+            (
+                Claim(
+                    id="claim-relation",
+                    text="Revenue is related to expenses.",
+                    evidence=citations,
+                ),
+            ),
+            (
+                RetrievalHit(chunk=first, score=1.0, rank=1),
+                RetrievalHit(chunk=second, score=0.9, rank=2),
+            ),
+        )
+
+    assert failure.value.reason == AbstentionReason.CONTRADICTORY_EVIDENCE
+
+
+def test_missing_document_authority_abstains_before_citation_acceptance() -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        CitationVerifier,
+        Claim,
+        RetrievalAbstention,
+    )
+
+    chunk = Chunk(
+        id="policy",
+        workspace_id="workspace-a",
+        document_id="doc-1",
+        ordinal=0,
+        text="Asteria has a security policy.",
+        content_hash="a" * 64,
+        block_id="block-1",
+        source_location={
+            "document_id": "doc-1",
+            "path": "policy.md",
+            "line_start": 1,
+        },
+    )
+    citation = Evidence(
+        id="evidence-policy",
+        document_id="doc-1",
+        display_name="Arbitrary Display Name",
+        source_location=chunk.source_location,
+        excerpt=chunk.text,
+        chunk_id=chunk.id,
+    )
+
+    with pytest.raises(RetrievalAbstention) as failure:
+        CitationVerifier().verify(
+            AUTHORIZED,
+            (
+                Claim(
+                    id="claim-policy",
+                    text="Asteria has a security policy.",
+                    evidence=(citation,),
+                ),
+            ),
+            (RetrievalHit(chunk=chunk, score=1.0, rank=1),),
+        )
+
+    assert failure.value.reason == AbstentionReason.MISSING_DOCUMENT_AUTHORITY
+
+
+def test_empty_hybrid_retrieval_returns_typed_abstention_outcome() -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        HybridRetriever,
+        RetrievalOutcomeStatus,
+    )
+
+    class EmptyRetriever:
+        def retrieve(
+            self, context: AccessContext, query: str, *, limit: int = 20
+        ) -> tuple[RetrievalHit, ...]:
+            del context, query, limit
+            return ()
+
+    outcome = HybridRetriever(EmptyRetriever(), EmptyRetriever()).retrieve_outcome(
+        AUTHORIZED, "unsupported question"
+    )
+
+    assert outcome.status == RetrievalOutcomeStatus.ABSTAINED
+    assert outcome.hits == ()
+    assert outcome.reason == AbstentionReason.UNSUPPORTED_RETRIEVAL
+
+
+def test_unrelated_citation_cannot_be_carried_by_another_supported_citation() -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        CitationVerifier,
+        Claim,
+        RetrievalAbstention,
+    )
+
+    supported_chunk = Chunk(
+        id="supported",
+        workspace_id="workspace-a",
+        document_id="doc-1",
+        ordinal=0,
+        text="FY2025 revenue was EUR 10,000,000.",
+        content_hash="a" * 64,
+        block_id="block-1",
+        source_location={
+            "document_id": "doc-1",
+            "path": "financial.md",
+            "line_start": 1,
+        },
+    )
+    unrelated_chunk = supported_chunk.model_copy(
+        update={
+            "id": "unrelated",
+            "document_id": "doc-2",
+            "text": "The board approved the annual meeting agenda.",
+            "block_id": "block-2",
+            "source_location": SourceLocation(
+                document_id="doc-2", path="board.md", line_start=1
+            ),
+        }
+    )
+    repository = InMemoryDocumentRepository()
+    for document_id, display_name, path in (
+        ("doc-1", "Financial Summary", "financial.md"),
+        ("doc-2", "Board Minutes", "board.md"),
+    ):
+        repository.save(
+            "workspace-a",
+            DocumentRecord(
+                id=document_id,
+                display_name=display_name,
+                document_type=DocumentType.FINANCIAL_SUMMARY,
+                path=path,
+                media_type="text/markdown",
+                sha256="b" * 64,
+                byte_length=1,
+            ),
+        )
+    citations = (
+        Evidence(
+            id="evidence-supported",
+            document_id="doc-1",
+            display_name="Financial Summary",
+            source_location=supported_chunk.source_location,
+            excerpt=supported_chunk.text,
+            chunk_id="supported",
+        ),
+        Evidence(
+            id="evidence-unrelated",
+            document_id="doc-2",
+            display_name="Board Minutes",
+            source_location=unrelated_chunk.source_location,
+            excerpt=unrelated_chunk.text,
+            chunk_id="unrelated",
+        ),
+    )
+
+    with pytest.raises(RetrievalAbstention) as failure:
+        CitationVerifier(repository).verify(
+            AUTHORIZED,
+            (
+                Claim(
+                    id="claim-revenue",
+                    text="FY2025 revenue was EUR 10,000,000.",
+                    evidence=citations,
+                ),
+            ),
+            (
+                RetrievalHit(chunk=supported_chunk, score=1.0, rank=1),
+                RetrievalHit(chunk=unrelated_chunk, score=0.9, rank=2),
+            ),
+        )
+
+    assert failure.value.reason == AbstentionReason.UNSUPPORTED_EVIDENCE
+
+
+def test_authoritative_document_identity_rejects_arbitrary_display_name() -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        CitationVerifier,
+        Claim,
+        RetrievalAbstention,
+    )
+
+    chunk = Chunk(
+        id="policy",
+        workspace_id="workspace-a",
+        document_id="doc-1",
+        ordinal=0,
+        text="Asteria has a security policy.",
+        content_hash="a" * 64,
+        block_id="block-1",
+        source_location={
+            "document_id": "doc-1",
+            "path": "policy.md",
+            "line_start": 1,
+        },
+    )
+    repository = InMemoryDocumentRepository()
+    repository.save(
+        "workspace-a",
+        DocumentRecord(
+            id="doc-1",
+            display_name="Security Policy",
+            document_type=DocumentType.SECURITY_POLICY,
+            path="policy.md",
+            media_type="text/markdown",
+            sha256="b" * 64,
+            byte_length=1,
+        ),
+    )
+    citation = Evidence(
+        id="evidence-policy",
+        document_id="doc-1",
+        display_name="Arbitrary Display Name",
+        source_location=chunk.source_location,
+        excerpt=chunk.text,
+        chunk_id=chunk.id,
+    )
+
+    with pytest.raises(RetrievalAbstention) as failure:
+        CitationVerifier(repository).verify(
+            AUTHORIZED,
+            (
+                Claim(
+                    id="claim-policy",
+                    text=chunk.text,
+                    evidence=(citation,),
+                ),
+            ),
+            (RetrievalHit(chunk=chunk, score=1.0, rank=1),),
+        )
+
+    assert failure.value.reason == AbstentionReason.INVALID_CITATION
+
+
+def test_postgres_decoded_foreign_hit_is_rejected_before_return() -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        PostgresLexicalRetriever,
+        RetrievalAbstention,
+    )
+
+    class Result:
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return [
+                (
+                    "foreign",
+                    "workspace-b",
+                    "doc-b",
+                    0,
+                    "foreign evidence",
+                    "a" * 64,
+                    "block-b",
+                    {
+                        "document_id": "doc-b",
+                        "path": "foreign.md",
+                        "line_start": 1,
+                    },
+                    1.0,
+                )
+            ]
+
+    class Connection:
+        def execute(self, statement: str, parameters: tuple[object, ...]) -> Result:
+            del statement, parameters
+            return Result()
+
+    with pytest.raises(RetrievalAbstention) as failure:
+        PostgresLexicalRetriever(Connection()).retrieve(AUTHORIZED, "evidence")
+
+    assert failure.value.reason == AbstentionReason.FOREIGN_WORKSPACE
+
+
+def test_false_relational_claim_abstains_against_opposite_relation() -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        CitationVerifier,
+        Claim,
+        RetrievalAbstention,
+    )
+
+    chunk = Chunk(
+        id="relation",
+        workspace_id="workspace-a",
+        document_id="doc-1",
+        ordinal=0,
+        text="Revenue is less than expenses.",
+        content_hash="a" * 64,
+        block_id="block-1",
+        source_location={
+            "document_id": "doc-1",
+            "path": "financial.md",
+            "line_start": 1,
+        },
+    )
+    citation = Evidence(
+        id="evidence-relation",
+        document_id="doc-1",
+        display_name="Financial Summary",
+        source_location=chunk.source_location,
+        excerpt=chunk.text,
+        chunk_id=chunk.id,
+    )
+    repository = InMemoryDocumentRepository()
+    repository.save(
+        "workspace-a",
+        DocumentRecord(
+            id="doc-1",
+            display_name="Financial Summary",
+            document_type=DocumentType.FINANCIAL_SUMMARY,
+            path="financial.md",
+            media_type="text/markdown",
+            sha256="b" * 64,
+            byte_length=1,
+        ),
+    )
+
+    with pytest.raises(RetrievalAbstention) as failure:
+        CitationVerifier(repository).verify(
+            AUTHORIZED,
+            (
+                Claim(
+                    id="claim-relation",
+                    text="Revenue is greater than expenses.",
+                    evidence=(citation,),
+                ),
+            ),
+            (RetrievalHit(chunk=chunk, score=1.0, rank=1),),
+        )
+
+    assert failure.value.reason == AbstentionReason.UNSUPPORTED_EVIDENCE

@@ -100,6 +100,112 @@ $ uv run pytest tests/test_retrieval.py -q
 11 passed
 ```
 
+## Fix round 1/5 TDD evidence
+
+The controller-preserved Ruff formatter diff in `backend/src/due_diligence_copilot/retrieval.py` was retained as the starting worktree state. Each review finding was reproduced before its production change.
+
+Negation RED:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_false_negated_claim_abstains_against_positive_evidence -q
+E   Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+```
+
+Negation GREEN:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_false_negated_claim_abstains_against_positive_evidence -q
+.                                                                        [100%]
+```
+
+Foreign delegated-hit RED:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_hybrid_rejects_foreign_delegate_hits_before_fusion -q
+E   AssertionError: foreign evidence reached reranking
+```
+
+Foreign delegated-hit GREEN:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_hybrid_rejects_foreign_delegate_hits_before_fusion -q
+.                                                                        [100%]
+```
+
+Nonnumeric polarity RED:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_textual_polarity_contradiction_abstains_without_numeric_values -q
+E   Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+```
+
+Nonnumeric polarity and relational contradiction GREEN:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_textual_polarity_contradiction_abstains_without_numeric_values -q
+.                                                                        [100%]
+$ uv run pytest tests/test_retrieval.py::test_relational_contradiction_abstains_without_numeric_values -q
+.                                                                        [100%]
+```
+
+Missing document-authority RED:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_missing_document_authority_abstains_before_citation_acceptance -q
+E   Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+```
+
+Missing authority and arbitrary display-name GREEN:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_missing_document_authority_abstains_before_citation_acceptance -q
+.                                                                        [100%]
+$ uv run pytest tests/test_retrieval.py::test_authoritative_document_identity_rejects_arbitrary_display_name -q
+.                                                                        [100%]
+```
+
+Empty retrieval RED:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_empty_hybrid_retrieval_returns_typed_abstention_outcome -q
+E   ImportError: cannot import name 'RetrievalOutcomeStatus' from 'due_diligence_copilot.retrieval'
+```
+
+Empty retrieval GREEN:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_empty_hybrid_retrieval_returns_typed_abstention_outcome -q
+.                                                                        [100%]
+```
+
+Per-citation and relational alignment RED/GREEN:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_unrelated_citation_cannot_be_carried_by_another_supported_citation -q
+E   Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+$ uv run pytest tests/test_retrieval.py::test_unrelated_citation_cannot_be_carried_by_another_supported_citation -q
+.                                                                        [100%]
+$ uv run pytest tests/test_retrieval.py::test_false_relational_claim_abstains_against_opposite_relation -q
+E   Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+$ uv run pytest tests/test_retrieval.py::test_false_relational_claim_abstains_against_opposite_relation -q
+.                                                                        [100%]
+```
+
+PostgreSQL decoded foreign-row regression:
+
+```text
+$ uv run pytest tests/test_retrieval.py::test_postgres_decoded_foreign_hit_is_rejected_before_return -q
+.                                                                        [100%]
+```
+
+Final fix-round focused retrieval suite before repository gates:
+
+```text
+$ uv run pytest tests/test_retrieval.py -q
+.....................                                                    [100%]
+21 passed
+```
+
 ## Verification evidence
 
 ```text
@@ -110,6 +216,11 @@ frontend lint: passed
 frontend type-check: passed
 frontend test: 1 passed
 frontend build: passed
+
+$ uvx --from pre-commit==4.3.0 pre-commit run --all-files
+ruff (legacy alias): Failed; files were modified by this hook
+ruff format: Failed; 2 files reformatted, 24 files left unchanged
+prettier: Passed
 
 $ uvx --from pre-commit==4.3.0 pre-commit run --all-files
 ruff (legacy alias): Passed
@@ -128,6 +239,20 @@ $ git ls-files -co --exclude-standard | rg -i '(^|/)(\.env$|.*(secret|credential
 
 No live model, provider, database, network retrieval, agent graph, API endpoint, Celery job, UI, deployment, or publication behavior was added.
 
+Final fix-round full verification:
+
+```text
+$ make verify
+Success: no issues found in 17 source files
+81 passed in 0.58s
+frontend lint: passed
+frontend type-check: passed
+frontend test: 1 passed
+frontend build: passed
+```
+
 ## Concerns and limits
 
 The PostgreSQL/pgvector implementations are injected SQL boundaries and were verified for SQL shape, parameter binding, decoding, and authorization ordering; no live PostgreSQL/pgvector service was used, by design. Independent controller review and any checkpoint push remain outside this implementer run.
+
+Fix round 1/5 status: all listed review findings are addressed in the local worktree. The Task 4 checkpoint remains pending independent review and has not been pushed.

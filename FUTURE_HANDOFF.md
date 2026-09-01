@@ -103,3 +103,22 @@
   database integration is claimed. Task 4 remains pending independent review;
   no push was performed.
 - Next task: Task 5.
+
+## Task 4 fix round 1/5 checkpoint
+
+- Preserved the controller's Ruff formatter change in `retrieval.py` and
+  hardened claim alignment to fail closed on negation, numeric, relational,
+  and unsupported paraphrases. Every citation must contribute support to its
+  claim; missing document authority now abstains and arbitrary display names
+  are rejected against the authoritative repository.
+- Hybrid retrieval validates every delegated hit's workspace before fusion or
+  reranking; PostgreSQL-decoded rows receive the same workspace validation.
+  Textual polarity and relational contradictions no longer have a wording
+  bypass and produce typed contradiction abstentions.
+- Added a typed `RetrievalOutcome` abstention path for empty hybrid retrieval,
+  while preserving tuple retriever ports. Focused retrieval suite: 21 passed.
+- Full fix-round backend suite: 81 passed; frontend lint, type-check, test,
+  and build also passed. The first pinned pre-commit run reformatted the
+  controller-preserved retrieval file and the test file; remaining Ruff line
+  findings were fixed, and the second pinned run passed without modification.
+- Task 4 remains pending independent review. No push was performed.

@@ -39,6 +39,54 @@ _QUERY_EXPANSIONS = {
     "contradiction": "conflicts",
     "policy": "security",
 }
+_NEGATION_TERMS = frozenset(
+    {
+        "absent",
+        "cannot",
+        "lacks",
+        "missing",
+        "never",
+        "no",
+        "none",
+        "not",
+        "without",
+    }
+)
+_POSITIVE_POLARITY = frozenset(
+    {
+        "available",
+        "enabled",
+        "exists",
+        "greater",
+        "has",
+        "higher",
+        "mandatory",
+        "more",
+        "must",
+        "present",
+        "provided",
+        "required",
+    }
+)
+_NEGATIVE_POLARITY = frozenset(
+    {
+        "absent",
+        "below",
+        "disabled",
+        "fewer",
+        "less",
+        "lower",
+        "missing",
+        "optional",
+        "unavailable",
+        "without",
+    }
+)
+_GREATER_RELATIONS = frozenset(
+    {"above", "exceeds", "greater", "higher", "largest", "more", "over"}
+)
+_LESSER_RELATIONS = frozenset({"below", "fewer", "less", "lower", "smallest", "under"})
+_EQUAL_RELATIONS = frozenset({"equal", "equals", "same"})
 
 
 class RetrievalHit(ContractModel):
@@ -57,9 +105,13 @@ class ContextPack(ContractModel):
 
 
 class AbstentionReason(StrEnum):
+    FOREIGN_WORKSPACE = "foreign_workspace"
     INVALID_CITATION = "invalid_citation"
+    INVALID_RETRIEVAL = "invalid_retrieval"
+    MISSING_DOCUMENT_AUTHORITY = "missing_document_authority"
     UNSUPPORTED_EVIDENCE = "unsupported_evidence"
     CONTRADICTORY_EVIDENCE = "contradictory_evidence"
+    UNSUPPORTED_RETRIEVAL = "unsupported_retrieval"
 
 
 class RetrievalAbstention(Exception):
@@ -95,6 +147,17 @@ class RetrievalEvaluation(ContractModel):
     per_question: tuple[QuestionRetrievalMetric, ...]
 
 
+class RetrievalOutcomeStatus(StrEnum):
+    RETRIEVED = "retrieved"
+    ABSTAINED = "abstained"
+
+
+class RetrievalOutcome(ContractModel):
+    status: RetrievalOutcomeStatus
+    hits: tuple[RetrievalHit, ...] = ()
+    reason: AbstentionReason | None = None
+
+
 class LexicalRetriever(Protocol):
     def retrieve(
         self, context: AccessContext, query: str, *, limit: int = CANDIDATE_DEPTH
@@ -115,6 +178,18 @@ class Reranker(Protocol):
 
 class EmbeddingProvider(Protocol):
     def embed(self, text: str) -> Sequence[float]: ...
+
+
+def _validate_hit(hit: RetrievalHit, workspace_id: str) -> None:
+    if not isinstance(hit, RetrievalHit):
+        raise RetrievalAbstention(
+            AbstentionReason.INVALID_RETRIEVAL, "retriever returned an invalid hit"
+        )
+    if hit.chunk.workspace_id != workspace_id:
+        raise RetrievalAbstention(
+            AbstentionReason.FOREIGN_WORKSPACE,
+            "retriever returned evidence from another workspace",
+        )
 
 
 def _tokens(value: str) -> tuple[str, ...]:
@@ -172,6 +247,36 @@ def _expanded_query_terms(query: str) -> tuple[str, ...]:
         _QUERY_EXPANSIONS[term] for term in terms if term in _QUERY_EXPANSIONS
     )
     return terms + expansions
+
+
+def _is_negated(value: str) -> bool:
+    terms = set(_tokens(value))
+    return bool(terms & _NEGATION_TERMS) or "doesn't" in value.casefold()
+
+
+def _polarity(value: str) -> int | None:
+    terms = set(_tokens(value))
+    positive = bool(terms & _POSITIVE_POLARITY)
+    negative = bool(terms & _NEGATIVE_POLARITY) or _is_negated(value)
+    if positive == negative:
+        return None
+    return 1 if positive else -1
+
+
+def _fact_context(value: str) -> set[str]:
+    terms = set(_tokens(value))
+    return terms - _POSITIVE_POLARITY - _NEGATIVE_POLARITY - _NEGATION_TERMS
+
+
+def _relation(value: str) -> int | None:
+    terms = set(_tokens(value))
+    relation_groups = (
+        (1, _GREATER_RELATIONS),
+        (-1, _LESSER_RELATIONS),
+        (0, _EQUAL_RELATIONS),
+    )
+    matches = {polarity for polarity, words in relation_groups if terms & words}
+    return matches.pop() if len(matches) == 1 else None
 
 
 class DeterministicLexicalRetriever:
@@ -268,7 +373,7 @@ class _PostgresChunkRetriever:
         self._table = _safe_table(table)
 
     @staticmethod
-    def _decode_rows(result: object) -> tuple[RetrievalHit, ...]:
+    def _decode_rows(result: object, workspace_id: str) -> tuple[RetrievalHit, ...]:
         fetchall = getattr(result, "fetchall", None)
         if not callable(fetchall):
             return ()
@@ -293,13 +398,17 @@ class _PostgresChunkRetriever:
                 source_location=SourceLocation.model_validate(location),
             )
             score = float(row[8]) if len(row) > 8 else 0.0
-            hits.append(RetrievalHit(chunk=chunk, score=score, rank=rank))
+            hit = RetrievalHit(chunk=chunk, score=score, rank=rank)
+            _validate_hit(hit, workspace_id)
+            hits.append(hit)
         return tuple(hits[:CANDIDATE_DEPTH])
 
     def _execute(
-        self, statement: str, parameters: tuple[object, ...]
+        self, statement: str, parameters: tuple[object, ...], workspace_id: str
     ) -> tuple[RetrievalHit, ...]:
-        return self._decode_rows(self._connection.execute(statement, parameters))
+        return self._decode_rows(
+            self._connection.execute(statement, parameters), workspace_id
+        )
 
 
 class PostgresLexicalRetriever(_PostgresChunkRetriever):
@@ -326,7 +435,9 @@ class PostgresLexicalRetriever(_PostgresChunkRetriever):
             "FROM scoped WHERE search_vector @@ plainto_tsquery('simple', %s) "
             "ORDER BY score DESC, id ASC LIMIT %s"
         )
-        return self._execute(statement, (workspace_id, query, query, bounded_limit))
+        return self._execute(
+            statement, (workspace_id, query, query, bounded_limit), workspace_id
+        )
 
 
 class PostgresVectorRetriever(_PostgresChunkRetriever):
@@ -357,7 +468,7 @@ class PostgresVectorRetriever(_PostgresChunkRetriever):
             "ORDER BY embedding <=> %s ASC, id ASC LIMIT %s"
         )
         return self._execute(
-            statement, (workspace_id, embedding, embedding, bounded_limit)
+            statement, (workspace_id, embedding, embedding, bounded_limit), workspace_id
         )
 
 
@@ -372,9 +483,7 @@ class DeterministicReranker:
         scored = [
             (
                 candidate.score
-                + sum(
-                    _tokens(candidate.chunk.text).count(term) for term in query_terms
-                )
+                + sum(_tokens(candidate.chunk.text).count(term) for term in query_terms)
                 / 1_000_000,
                 index,
                 candidate,
@@ -401,16 +510,18 @@ class HybridRetriever:
         self._vector = vector
         self._reranker = reranker or DeterministicReranker()
 
-    def retrieve(
-        self, context: AccessContext, query: str
-    ) -> tuple[RetrievalHit, ...]:
-        require_read_workspace(context)
+    def retrieve(self, context: AccessContext, query: str) -> tuple[RetrievalHit, ...]:
+        workspace_id = require_read_workspace(context)
         lexical_hits = self._lexical.retrieve(context, query, limit=CANDIDATE_DEPTH)[
             :CANDIDATE_DEPTH
         ]
+        for hit in lexical_hits:
+            _validate_hit(hit, workspace_id)
         vector_hits = self._vector.retrieve(context, query, limit=CANDIDATE_DEPTH)[
             :CANDIDATE_DEPTH
         ]
+        for hit in vector_hits:
+            _validate_hit(hit, workspace_id)
         by_id: dict[str, RetrievalHit] = {}
         scores: dict[str, float] = {}
         for hits in (lexical_hits, vector_hits):
@@ -421,11 +532,23 @@ class HybridRetriever:
                 )
         fused = tuple(
             by_id[chunk_id].model_copy(update={"score": scores[chunk_id]})
-            for chunk_id in sorted(
-                scores, key=lambda item: (-scores[item], item)
-            )[:FINAL_RESULT_COUNT]
+            for chunk_id in sorted(scores, key=lambda item: (-scores[item], item))[
+                :FINAL_RESULT_COUNT
+            ]
         )
         return self._reranker.rerank(query, fused, limit=FINAL_RESULT_COUNT)
+
+    def retrieve_outcome(self, context: AccessContext, query: str) -> RetrievalOutcome:
+        hits = self.retrieve(context, query)
+        if not hits:
+            return RetrievalOutcome(
+                status=RetrievalOutcomeStatus.ABSTAINED,
+                reason=AbstentionReason.UNSUPPORTED_RETRIEVAL,
+            )
+        return RetrievalOutcome(
+            status=RetrievalOutcomeStatus.RETRIEVED,
+            hits=hits,
+        )
 
 
 def pack_context(
@@ -464,27 +587,65 @@ def _normalise(value: str) -> str:
 
 
 def _claim_is_supported(claim: Claim, evidence: Sequence[Evidence]) -> bool:
+    evidence_text = " ".join(item.excerpt for item in evidence)
+    if _is_negated(claim.text) != _is_negated(evidence_text):
+        return False
+    claim_relation = _relation(claim.text)
+    if claim_relation is not None and claim_relation != _relation(evidence_text):
+        return False
+    claim_polarity = _polarity(claim.text)
+    if claim_polarity is not None and claim_polarity != _polarity(evidence_text):
+        return False
     claim_terms = set(_tokens(claim.text))
-    evidence_terms = set(_tokens(" ".join(item.excerpt for item in evidence)))
+    evidence_terms = set(_tokens(evidence_text))
     if not claim_terms or not evidence_terms:
         return False
-    numeric_terms = {
-        term for term in claim_terms if any(char.isdigit() for char in term)
+    claim_numbers = {
+        (float(value.replace(",", "").rstrip("%")), value.endswith("%"))
+        for value in _NUMBER.findall(claim.text)
     }
-    if numeric_terms - evidence_terms:
+    evidence_numbers = {
+        (float(value.replace(",", "").rstrip("%")), value.endswith("%"))
+        for value in _NUMBER.findall(evidence_text)
+    }
+    if not claim_numbers <= evidence_numbers:
         return False
-    return len(claim_terms & evidence_terms) / len(claim_terms) >= 0.35
+    return claim_terms <= evidence_terms
+
+
+def _citation_supports_claim(claim: Claim, citation: Evidence) -> bool:
+    claim_terms = set(_tokens(claim.text))
+    citation_terms = set(_tokens(citation.excerpt))
+    overlap = claim_terms & citation_terms
+    if not claim_terms:
+        return False
+    if len(overlap) < 2 and not (
+        _normalise(claim.text) in _normalise(citation.excerpt)
+        or _normalise(citation.excerpt) in _normalise(claim.text)
+    ):
+        return False
+    return True
 
 
 def _has_material_contradiction(evidence: Sequence[Evidence]) -> bool:
     numeric_pattern = re.compile(r"\d[\d,.]*(?:%|[a-z]+)?", re.IGNORECASE)
     for position, left in enumerate(evidence):
         left_numbers = set(numeric_pattern.findall(left.excerpt.casefold()))
-        left_context = set(_tokens(numeric_pattern.sub(" ", left.excerpt)))
+        left_context = _fact_context(numeric_pattern.sub(" ", left.excerpt))
         for right in evidence[position + 1 :]:
             right_numbers = set(numeric_pattern.findall(right.excerpt.casefold()))
-            right_context = set(_tokens(numeric_pattern.sub(" ", right.excerpt)))
-            if left_numbers != right_numbers and len(left_context & right_context) >= 2:
+            right_context = _fact_context(numeric_pattern.sub(" ", right.excerpt))
+            numeric_conflict = bool(left_numbers or right_numbers) and (
+                left_numbers != right_numbers
+            )
+            polarity_conflict = (
+                _polarity(left.excerpt) is not None
+                and _polarity(right.excerpt) is not None
+                and _polarity(left.excerpt) != _polarity(right.excerpt)
+            )
+            if (numeric_conflict and len(left_context & right_context) >= 2) or (
+                polarity_conflict and len(left_context & right_context) >= 1
+            ):
                 return True
     return False
 
@@ -563,18 +724,29 @@ class CitationVerifier:
                             "citation document identity is invalid",
                         )
                 all_evidence.append(citation)
+        if _has_material_contradiction(all_evidence):
+            raise RetrievalAbstention(
+                AbstentionReason.CONTRADICTORY_EVIDENCE,
+                "citations contain materially contradictory values",
+            )
+        for claim in claims:
             if not _claim_is_supported(claim, claim.evidence):
                 raise RetrievalAbstention(
                     AbstentionReason.UNSUPPORTED_EVIDENCE,
                     f"claim {claim.id} is not supported by its citations",
                 )
-        if not any(
-            any(word in _tokens(claim.text) for word in ("contradiction", "conflict"))
-            for claim in claims
-        ) and _has_material_contradiction(all_evidence):
+            if any(
+                not _citation_supports_claim(claim, citation)
+                for citation in claim.evidence
+            ):
+                raise RetrievalAbstention(
+                    AbstentionReason.UNSUPPORTED_EVIDENCE,
+                    f"claim {claim.id} has an unrelated citation",
+                )
+        if self._documents is None:
             raise RetrievalAbstention(
-                AbstentionReason.CONTRADICTORY_EVIDENCE,
-                "citations contain materially contradictory values",
+                AbstentionReason.MISSING_DOCUMENT_AUTHORITY,
+                "document repository is required for citation verification",
             )
         citation_count = len(all_evidence)
         return CitationVerification(
