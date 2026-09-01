@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
+from functools import lru_cache
+from types import MappingProxyType
+
 from pydantic import Field, model_validator
 
 from .agentic import (
@@ -12,7 +17,12 @@ from .agentic import (
     PlannerProvider,
 )
 from .agentic_tools import ApprovedToolId
-from .domain import ContractModel, GroundTruthManifest
+from .domain import (
+    BenchmarkQuestion,
+    ContractModel,
+    GroundTruthManifest,
+    SourceLocation,
+)
 
 LITERAL_TOOL_ROUTING: dict[str, tuple[ApprovedToolId, ...]] = {
     "financial-revenue": (),
@@ -33,6 +43,55 @@ LITERAL_TOOL_ROUTING: dict[str, tuple[ApprovedToolId, ...]] = {
     "revenue-reconciliation": (ApprovedToolId.CALCULATE_FINANCIAL_METRIC,),
     "supplier-term": (ApprovedToolId.INSPECT_CONTRACT_CLAUSE,),
 }
+
+
+@lru_cache(maxsize=1)
+def _canonical_benchmark_questions() -> Mapping[str, str]:
+    from .synthetic_data import build_manifest
+
+    manifest, _ = build_manifest()
+    return MappingProxyType(
+        {
+            question.id: _question_fingerprint(question)
+            for question in manifest.benchmark_questions
+        }
+    )
+
+
+def _question_fingerprint(question: BenchmarkQuestion) -> str:
+    def location(value: SourceLocation) -> dict[str, object]:
+        return {
+            "document_id": value.document_id,
+            "path": value.path,
+            "section": value.section,
+            "page": value.page,
+            "table": value.table,
+            "line_start": value.line_start,
+            "line_end": value.line_end,
+            "cell": value.cell,
+        }
+
+    data = {
+        "id": question.id,
+        "question": question.question,
+        "category": getattr(question.category, "value", question.category),
+        "expected_answer": {
+            "answer": question.expected_answer.answer,
+            "literal": question.expected_answer.literal,
+            "source_location": location(question.expected_answer.source_location),
+        },
+        "expected_evidence": [
+            {
+                "literal": item.literal,
+                "source_location": location(item.source_location),
+                "classification": getattr(
+                    item.classification, "value", item.classification
+                ),
+            }
+            for item in question.expected_evidence
+        ],
+    }
+    return json.dumps(data, sort_keys=True, separators=(",", ":"))
 
 
 class ToolRoutingScenario(ContractModel):
@@ -75,6 +134,13 @@ def evaluate_tool_routing(
         raise ValueError("routing manifest must contain an exact unique question set")
     if set(question_ids) != set(LITERAL_TOOL_ROUTING):
         raise ValueError("routing manifest must contain the exact literal question set")
+    canonical = _canonical_benchmark_questions()
+    for question in manifest.benchmark_questions:
+        fingerprint = _question_fingerprint(question)
+        if fingerprint != canonical.get(question.id):
+            raise ValueError(
+                f"routing manifest question {question.id} does not match canonical data"
+            )
     scenarios: list[ToolRoutingScenario] = []
     for question in manifest.benchmark_questions:
         if question.id not in LITERAL_TOOL_ROUTING:

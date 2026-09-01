@@ -244,3 +244,14 @@ secret scan are recorded for the closing run. Minor event-store defensive-copy
 and timer hard-wall/start timing improvements remain deferred to a later task;
 durable database persistence remains Task 6. This is a local fix-round
 checkpoint and does not claim external acceptance or live-provider quality.
+
+
+## Fix round 2/5 evidence
+
+Started from committed `8b384fa`. The focused regression run was intentionally RED: `timeout --signal=TERM 90s uv run pytest -W error tests/test_agentic_fix_round2.py -q` reported `14 failed`. Failures covered forged approval provenance, provider-controlled contradiction claims, mutable budgets, nested provider output bounds, fixed planner accounting, and canonical routing-manifest mutation.
+
+The fix adds workflow provenance authentication and independent finding/result/evidence checks, deterministic contradiction-result binding, construction snapshots and ledger-time budget validation, bounded/revalidated nested outputs with serialized-size token charging, and immutable canonical manifest fingerprints.
+
+Focused GREEN: `timeout --signal=TERM 90s uv run pytest -W error tests/test_agentic_fix_round2.py tests/test_agentic_fix_round1.py tests/test_agentic_tools.py tests/test_agentic_workflow.py tests/test_agentic_evaluation.py -q` => `76 passed`; full warning-as-error suite => `172 passed`. `make verify` passed (`172 passed in 2.06s`, frontend lint/type-check/test/build passed); pinned pre-commit passed; frontend `npm audit --audit-level=high` found 0 vulnerabilities; literal routing evaluation was `scenarios=14 correct=14 accuracy=1.0000 target_met=True`.
+
+Current imports produce zero warnings under `pytest -W error`; no warning suppression was added. Deferred minor concerns remain event-store defensive-copy semantics and timer start/hard-wall timing. Durable database persistence remains Task 6. This checkpoint does not claim external acceptance or live-provider quality.

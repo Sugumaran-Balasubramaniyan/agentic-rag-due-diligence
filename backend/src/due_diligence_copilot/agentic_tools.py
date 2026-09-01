@@ -56,10 +56,10 @@ class ToolAbstentionReason(StrEnum):
 
 class FinancialMetricArguments(ContractModel):
     operation: FinancialOperation
-    left_label: str = Field(min_length=1)
-    right_label: str | None = None
+    left_label: str = Field(min_length=1, max_length=256)
+    right_label: str | None = Field(default=None, max_length=256)
     precision: int = Field(default=1, ge=0, le=6)
-    evidence_ids: tuple[str, ...] = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=10)
 
     @model_validator(mode="after")
     def validate_operands(self) -> FinancialMetricArguments:
@@ -77,17 +77,17 @@ class FinancialMetricArguments(ContractModel):
 
 class ContractClauseArguments(ContractModel):
     clause: ContractClause
-    evidence_ids: tuple[str, ...] = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=10)
 
 
 class ContradictionArguments(ContractModel):
-    subject: str = Field(min_length=1)
-    evidence_ids: tuple[str, ...] = Field(min_length=1)
+    subject: str = Field(min_length=1, max_length=256)
+    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=10)
 
 
 class MissingDocumentArguments(ContractModel):
-    document_name: str = Field(min_length=1)
-    evidence_ids: tuple[str, ...] = Field(min_length=1)
+    document_name: str = Field(min_length=1, max_length=256)
+    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=10)
 
 
 ToolArguments = (
@@ -126,8 +126,8 @@ class FinancialMetricResult(ContractModel):
     status: ToolResultStatus
     value: Decimal | None = None
     unit: FinancialUnit
-    claim: str | None = None
-    evidence: tuple[Evidence, ...] = ()
+    claim: str | None = Field(default=None, max_length=2000)
+    evidence: tuple[Evidence, ...] = Field(default=(), max_length=10)
     primary_evidence: tuple[Evidence, ...] = ()
     reason: ToolAbstentionReason | None = None
 
@@ -137,7 +137,7 @@ class ContractClauseResult(ContractModel):
     tool_id: ApprovedToolId = ApprovedToolId.INSPECT_CONTRACT_CLAUSE
     status: ToolResultStatus
     clause: ContractClause
-    claim: str | None = None
+    claim: str | None = Field(default=None, max_length=2000)
     evidence: tuple[Evidence, ...] = ()
     primary_evidence: tuple[Evidence, ...] = ()
     reason: ToolAbstentionReason | None = None
@@ -148,7 +148,7 @@ class ContradictionResult(ContractModel):
     tool_id: ApprovedToolId = ApprovedToolId.DETECT_CONTRADICTIONS
     status: ToolResultStatus
     subject: str
-    claim: str | None = None
+    claim: str | None = Field(default=None, max_length=2000)
     evidence: tuple[Evidence, ...] = ()
     primary_evidence: tuple[Evidence, ...] = ()
     reason: ToolAbstentionReason | None = None
@@ -159,7 +159,7 @@ class MissingDocumentResult(ContractModel):
     tool_id: ApprovedToolId = ApprovedToolId.ANALYZE_MISSING_DOCUMENTS
     status: ToolResultStatus
     document_name: str
-    claim: str | None = None
+    claim: str | None = Field(default=None, max_length=2000)
     evidence: tuple[Evidence, ...] = ()
     primary_evidence: tuple[Evidence, ...] = ()
     reason: ToolAbstentionReason | None = None

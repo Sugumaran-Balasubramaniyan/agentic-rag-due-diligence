@@ -77,14 +77,14 @@ class ContractModel(BaseModel):
 
 
 class SourceLocation(ContractModel):
-    document_id: str = Field(min_length=1)
-    path: str = Field(min_length=1)
-    section: str | None = None
+    document_id: str = Field(min_length=1, max_length=128)
+    path: str = Field(min_length=1, max_length=512)
+    section: str | None = Field(default=None, max_length=256)
     page: int | None = Field(default=None, ge=1)
-    table: str | None = None
+    table: str | None = Field(default=None, max_length=256)
     line_start: int | None = Field(default=None, ge=1)
     line_end: int | None = Field(default=None, ge=1)
-    cell: str | None = None
+    cell: str | None = Field(default=None, max_length=32)
 
     @model_validator(mode="after")
     def validate_coordinates(self) -> Self:
@@ -115,13 +115,13 @@ DocumentManifestItem = DocumentRecord
 
 
 class Evidence(ContractModel):
-    id: str = Field(min_length=1)
-    document_id: str = Field(min_length=1)
-    display_name: str = Field(min_length=1)
+    id: str = Field(min_length=1, max_length=128)
+    document_id: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=256)
     source_location: SourceLocation
     excerpt: str = Field(min_length=1, max_length=4000)
-    chunk_id: str | None = None
-    retrieval_score: float | None = None
+    chunk_id: str | None = Field(default=None, max_length=128)
+    retrieval_score: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class CalculationTrace(ContractModel):
@@ -142,6 +142,7 @@ class Finding(ContractModel):
     confidence: float = Field(ge=0.0, le=1.0)
     verification_status: VerificationStatus
     calculation: CalculationTrace | None = None
+    tool_result_id: str | None = Field(default=None, max_length=128)
 
 
 class AgentEvent(ContractModel):

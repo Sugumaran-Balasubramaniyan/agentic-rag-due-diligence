@@ -258,3 +258,10 @@
 - Minor event-store defensive-copy and hard-wall/timer-start timing concerns
   remain explicitly deferred; durable database event persistence remains Task
   6. This checkpoint is not an acceptance claim and has not been pushed.
+
+
+### Task 5 fix round 2/5 checkpoint (2026-09-01)
+
+Started from committed `8b384fa`. Round-2 regressions cover forged approval provenance, contradiction-category bypass, mutable budgets, nested provider bounds and actual serialized token accounting, and canonical routing-manifest integrity. Verification is green: focused Task 5 suite `76 passed`; full warning-as-error backend suite `172 passed`; `make verify` passed; pinned pre-commit passed; frontend audit found 0 vulnerabilities; literal routing is `14/14`, accuracy `1.0000`.
+
+Critical and important findings in this fix request are addressed. Minor event-store defensive-copy and timer start/hard-wall timing concerns remain explicitly deferred. This checkpoint does not claim external acceptance, live-provider quality, or Task 6 durable database integration.

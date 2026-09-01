@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import math
+import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -106,8 +110,6 @@ class InvestigationBudgets(ContractModel):
 
     @model_validator(mode="after")
     def elapsed_is_finite(self) -> InvestigationBudgets:
-        import math
-
         if not math.isfinite(self.max_elapsed_seconds):
             raise ValueError("elapsed budget must be finite")
         return self
@@ -133,8 +135,8 @@ class ClassificationResult(ContractModel):
 
 class FinancialPlanInput(ContractModel):
     operation: FinancialOperation
-    left_label: str = Field(min_length=1)
-    right_label: str | None = None
+    left_label: str = Field(min_length=1, max_length=256)
+    right_label: str | None = Field(default=None, max_length=256)
     precision: int = Field(default=1, ge=0, le=6)
 
     @model_validator(mode="after")
@@ -156,11 +158,11 @@ class ContractPlanInput(ContractModel):
 
 
 class ContradictionPlanInput(ContractModel):
-    subject: str = Field(min_length=1)
+    subject: str = Field(min_length=1, max_length=256)
 
 
 class MissingDocumentPlanInput(ContractModel):
-    document_name: str = Field(min_length=1)
+    document_name: str = Field(min_length=1, max_length=256)
 
 
 class InvestigationPlan(ContractModel):
@@ -238,6 +240,7 @@ class InvestigationResult(ContractModel):
     failure: FailureDetail | None = None
     abstention_reason: AbstentionReason | None = None
     budget: BudgetUsage
+    provenance_token: str | None = Field(default=None, max_length=128)
 
     @property
     def state(self) -> AnalysisState:
@@ -506,6 +509,18 @@ class _InvariantFailure(Exception):
     pass
 
 
+_PROVENANCE_KEY = secrets.token_bytes(32)
+
+
+def _provenance_token(result: InvestigationResult) -> str:
+    payload = result.model_dump_json(exclude={"provenance_token"})
+    return hmac.new(_PROVENANCE_KEY, payload.encode(), hashlib.sha256).hexdigest()
+
+
+def _estimated_output_tokens(value: ContractModel) -> int:
+    return max(1, (len(value.model_dump_json()) + 3) // 4)
+
+
 @dataclass
 class _BudgetLedger:
     budgets: InvestigationBudgets
@@ -517,6 +532,7 @@ class _BudgetLedger:
     model_tokens: int = 0
 
     def check_elapsed(self) -> None:
+        self.budgets = InvestigationBudgets.model_validate(self.budgets.model_dump())
         elapsed = self.clock.monotonic() - self.started_at
         if elapsed > self.budgets.max_elapsed_seconds:
             raise _BudgetExceeded(FailureCode.BUDGET_ELAPSED)
@@ -535,6 +551,7 @@ class _BudgetLedger:
 
     def model_call(self, tokens: int) -> None:
         self.check_elapsed()
+        self.budgets = InvestigationBudgets.model_validate(self.budgets.model_dump())
         if tokens < 0 or self.model_tokens + tokens > self.budgets.max_model_tokens:
             raise _BudgetExceeded(FailureCode.BUDGET_MODEL_TOKENS)
         self.token_accounting.charge(tokens)
@@ -792,7 +809,12 @@ class BoundedInvestigationWorkflow:
         self.generator = generator or DeterministicClaimGenerator()
         self.tools = tools or DeterministicToolRegistry()
         self.verifier = verifier or CitationVerifier(documents)
-        self.budgets = budgets or InvestigationBudgets()
+        self.budgets = InvestigationBudgets.model_validate(
+            (budgets or InvestigationBudgets()).model_dump()
+        )
+        self._budget_snapshot = InvestigationBudgets.model_validate(
+            self.budgets.model_dump()
+        )
         self.clock = clock or SystemClock()
         self.token_accounting = token_accounting or DeterministicTokenAccounting()
 
@@ -849,8 +871,11 @@ class BoundedInvestigationWorkflow:
                 budget=BudgetUsage(),
             )
 
+        budgets = InvestigationBudgets.model_validate(
+            self._budget_snapshot.model_dump()
+        )
         ledger = _BudgetLedger(
-            self.budgets,
+            budgets,
             self.clock,
             self.token_accounting,
             self.clock.monotonic(),
@@ -858,7 +883,7 @@ class BoundedInvestigationWorkflow:
         runtime = _Runtime(
             request=request,
             context=context,
-            budgets=self.budgets,
+            budgets=budgets,
             clock=self.clock,
             ledger=ledger,
             event_store=self.event_store,
@@ -881,7 +906,7 @@ class BoundedInvestigationWorkflow:
                 }
             ),
         )
-        return InvestigationResult(
+        result = InvestigationResult(
             analysis=final["analysis"],
             classification=final.get("classification"),
             plan=final.get("plan"),
@@ -895,6 +920,7 @@ class BoundedInvestigationWorkflow:
             abstention_reason=final.get("abstention_reason"),
             budget=ledger.usage(),
         )
+        return result.model_copy(update={"provenance_token": _provenance_token(result)})
 
     def build_investigation_graph(
         self, runtime: _Runtime
@@ -909,7 +935,9 @@ class BoundedInvestigationWorkflow:
                 if not isinstance(response, ClassificationResult):
                     raise _InvariantFailure()
                 response = ClassificationResult.model_validate(response.model_dump())
-                runtime.ledger.model_call(response.estimated_tokens)
+                runtime.ledger.model_call(
+                    max(response.estimated_tokens, _estimated_output_tokens(response))
+                )
                 return {"classification": response}
 
             return _run_action(runtime, state, "classify", action, FailureCode.PROVIDER)
@@ -927,7 +955,7 @@ class BoundedInvestigationWorkflow:
                 response = InvestigationPlan.model_validate(response.model_dump())
                 if not response.retrieval_query.strip():
                     raise _InvariantFailure()
-                runtime.ledger.model_call(64)
+                runtime.ledger.model_call(_estimated_output_tokens(response))
                 return {"plan": response}
 
             return _run_action(runtime, state, "plan", action, FailureCode.PROVIDER)
@@ -1015,6 +1043,7 @@ class BoundedInvestigationWorkflow:
                         | MissingDocumentResult,
                     ):
                         raise _InvariantFailure()
+                    result = type(result).model_validate(result.model_dump())
                     result = result.model_copy(
                         update={"id": f"tool-result-{len(results) + 1}"}
                     )
@@ -1048,16 +1077,32 @@ class BoundedInvestigationWorkflow:
                 if not isinstance(generated, GenerationResult):
                     raise _InvariantFailure()
                 generated = GenerationResult.model_validate(generated.model_dump())
-                runtime.ledger.model_call(generated.estimated_tokens)
+                runtime.ledger.model_call(
+                    max(generated.estimated_tokens, _estimated_output_tokens(generated))
+                )
                 if not generated.claims:
                     raise _SafeAbstention(AbstentionReason.UNSUPPORTED_EVIDENCE)
+                successful_results = {
+                    result.id: result
+                    for result in results
+                    if result.status is ToolResultStatus.SUCCEEDED
+                }
                 claims = tuple(
                     Claim(
                         id=draft.id,
                         text=draft.claim,
                         evidence=draft.citations,
                         tool_result_id=draft.tool_result_id,
-                        allows_contradiction=draft.category == "contradiction",
+                        allows_contradiction=(
+                            isinstance(
+                                successful_results.get(draft.tool_result_id),
+                                ContradictionResult,
+                            )
+                            and draft.claim
+                            == successful_results[draft.tool_result_id].claim
+                            and draft.citations
+                            == successful_results[draft.tool_result_id].evidence
+                        ),
                     )
                     for draft in generated.claims
                 )
@@ -1069,11 +1114,6 @@ class BoundedInvestigationWorkflow:
                     raise _SafeAbstention(abstention.reason) from abstention
                 if verification.claims_verified != len(generated.claims):
                     raise _InvariantFailure()
-                successful_results = {
-                    result.id: result
-                    for result in results
-                    if result.status is ToolResultStatus.SUCCEEDED
-                }
                 findings = tuple(
                     Finding(
                         id=draft.id.replace("claim-", "finding-", 1),
@@ -1083,6 +1123,7 @@ class BoundedInvestigationWorkflow:
                         evidence=list(draft.citations),
                         confidence=draft.confidence,
                         verification_status=VerificationStatus.VERIFIED,
+                        tool_result_id=draft.tool_result_id,
                         calculation=(
                             CalculationTrace(
                                 operation=plan.financial.operation.value,
@@ -1271,6 +1312,7 @@ class BoundedInvestigationWorkflow:
     def _build_tool_call(
         plan: InvestigationPlan, tool_id: ApprovedToolId, evidence: tuple[Evidence, ...]
     ) -> ToolCall:
+        evidence = evidence[:10]
         evidence_ids = tuple(item.id for item in evidence)
         arguments: ToolArguments
         if tool_id is ApprovedToolId.CALCULATE_FINANCIAL_METRIC:
@@ -1358,6 +1400,13 @@ class ApprovalBoundary:
                 completed=False,
                 reason=ApprovalFailureReason.UNVERIFIED_FINDINGS,
             )
+        if not self._has_valid_workflow_provenance(result):
+            return ApprovalOutcome(
+                analysis=analysis,
+                approval_state=ApprovalState.PENDING,
+                completed=False,
+                reason=ApprovalFailureReason.INTERNAL,
+            )
         analysis, event_persisted = self._approval_event(
             analysis, AgentEventStatus.COMPLETED
         )
@@ -1392,6 +1441,47 @@ class ApprovalBoundary:
             approval_state=ApprovalState.APPROVED,
             completed=True,
         )
+
+    @staticmethod
+    def _has_valid_workflow_provenance(result: InvestigationResult) -> bool:
+        if not result.provenance_token or not hmac.compare_digest(
+            result.provenance_token, _provenance_token(result)
+        ):
+            return False
+        successful = {
+            tool_result.id
+            for tool_result in result.tool_results
+            if tool_result.status is ToolResultStatus.SUCCEEDED
+        }
+        tool_results_by_id = {
+            tool_result.id: tool_result
+            for tool_result in result.tool_results
+            if tool_result.status is ToolResultStatus.SUCCEEDED
+        }
+        findings = result.analysis.findings
+        finding_ids = {finding.tool_result_id for finding in findings}
+        if (
+            not successful
+            or len(finding_ids) != len(findings)
+            or finding_ids != successful
+            or any(
+                finding.verification_status is not VerificationStatus.VERIFIED
+                or finding.tool_result_id is None
+                or not finding.evidence
+                or finding.tool_result_id not in tool_results_by_id
+                or any(
+                    finding_evidence.id
+                    not in {
+                        item.id
+                        for item in tool_results_by_id[finding.tool_result_id].evidence
+                    }
+                    for finding_evidence in finding.evidence
+                )
+                for finding in findings
+            )
+        ):
+            return False
+        return True
 
     def _approval_event(
         self, analysis: AnalysisState, status: AgentEventStatus
