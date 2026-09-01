@@ -272,6 +272,18 @@ _RELATIONAL_FACT = re.compile(
     r"(?P<object>[a-z][a-z0-9&' -]*?)$",
     re.IGNORECASE,
 )
+_BARE_POSSESSION = re.compile(
+    r"^(?P<verb>has no|have no|does not have|doesn't have|has|have)\s+"
+    r"(?P<object>[a-z][a-z0-9&' -]*?)$",
+    re.IGNORECASE,
+)
+_CLAUSE_SEPARATOR = re.compile(
+    r"(?:(?P<sentence>[.!?]+)|(?P<semicolon>;)|"
+    r"(?P<conjunction>(?:,\s*|\s+)(?:but|and|or)\s+)|"
+    r"(?P<comma>(?<!\d),(?!\s*(?:but|and|or)\b)))\s*",
+    re.IGNORECASE,
+)
+_ELISION_BOUNDARIES = frozenset({"comma", "conjunction", "semicolon"})
 
 
 def _fact_part(value: str) -> str:
@@ -282,6 +294,20 @@ def _numeric_value(currency: str | None, number: str) -> str:
     numeric = number.rstrip("%").replace(",", "")
     unit = "percent" if number.endswith("%") else (currency or "unitless")
     return f"{unit}:{numeric}"
+
+
+def _possession_fact(subject: str, verb: str, object_: str) -> _Fact:
+    normalised_verb = _fact_part(verb)
+    return _Fact(
+        subject=_fact_part(subject),
+        predicate="possession",
+        value=_fact_part(object_).removeprefix("a ").removeprefix("an "),
+        polarity=(
+            "negated"
+            if "no" in normalised_verb or "not" in normalised_verb
+            else "affirmed"
+        ),
+    )
 
 
 def _extract_fact(sentence: str) -> _Fact | None:
@@ -297,15 +323,10 @@ def _extract_fact(sentence: str) -> _Fact | None:
 
     possession = _POSSESSION_FACT.fullmatch(text)
     if possession is not None:
-        verb = _fact_part(possession.group("verb"))
-        polarity = "negated" if "no" in verb or "not" in verb else "affirmed"
-        return _Fact(
-            subject=_fact_part(possession.group("subject")),
-            predicate="possession",
-            value=_fact_part(possession.group("object"))
-            .removeprefix("a ")
-            .removeprefix("an "),
-            polarity=polarity,
+        return _possession_fact(
+            possession.group("subject"),
+            possession.group("verb"),
+            possession.group("object"),
         )
 
     relational = _RELATIONAL_FACT.fullmatch(text)
@@ -331,17 +352,30 @@ def _extract_fact(sentence: str) -> _Fact | None:
     return None
 
 
-def _extract_facts(text: str) -> tuple[_Fact, ...]:
-    sentences = re.split(
-        r"(?:[.!?]+|;|,?\s+(?:but|and|or)\s+)\s*", text, flags=re.IGNORECASE
-    )
+def _split_clauses(text: str) -> tuple[tuple[str, str | None], ...]:
+    clauses: list[tuple[str, str | None]] = []
+    start = 0
+    boundary: str | None = None
+    for separator in _CLAUSE_SEPARATOR.finditer(text):
+        clauses.append((text[start : separator.start()], boundary))
+        boundary = separator.lastgroup
+        start = separator.end()
+    clauses.append((text[start:], boundary))
+    return tuple(clauses)
+
+
+def _extract_facts_with_ambiguity(
+    text: str,
+) -> tuple[tuple[_Fact, ...], bool]:
     facts: list[_Fact] = []
-    for sentence in sentences:
-        fact = _extract_fact(sentence)
-        if fact is None and facts:
-            continuation = _BARE_STATE.fullmatch(_fact_part(sentence))
+    ambiguous = False
+    previous_fact: _Fact | None = None
+    for clause, boundary in _split_clauses(text):
+        fact = _extract_fact(clause)
+        prior = previous_fact if boundary in _ELISION_BOUNDARIES else None
+        if fact is None and prior is not None:
+            continuation = _BARE_STATE.fullmatch(_fact_part(clause))
             if continuation is not None:
-                prior = facts[-1]
                 if prior.predicate.startswith("state"):
                     fact = _Fact(
                         subject=prior.subject,
@@ -349,9 +383,34 @@ def _extract_facts(text: str) -> tuple[_Fact, ...]:
                         value=_fact_part(continuation.group("state")),
                         polarity="affirmed",
                     )
+            else:
+                possession = _BARE_POSSESSION.fullmatch(_fact_part(clause))
+                if possession is not None and prior.predicate == "possession":
+                    fact = _possession_fact(
+                        prior.subject,
+                        possession.group("verb"),
+                        possession.group("object"),
+                    )
+            if fact is None and _fact_part(clause):
+                ambiguous = True
+        elif (
+            fact is None
+            and boundary == "sentence"
+            and previous_fact is not None
+            and (
+                _BARE_STATE.fullmatch(_fact_part(clause)) is not None
+                or _BARE_POSSESSION.fullmatch(_fact_part(clause)) is not None
+            )
+        ):
+            ambiguous = True
         if fact is not None:
             facts.append(fact)
-    return tuple(facts)
+        previous_fact = fact
+    return tuple(facts), ambiguous
+
+
+def _extract_facts(text: str) -> tuple[_Fact, ...]:
+    return _extract_facts_with_ambiguity(text)[0]
 
 
 def _alignment_supported(claim_text: str, evidence_text: str) -> bool:
@@ -359,15 +418,15 @@ def _alignment_supported(claim_text: str, evidence_text: str) -> bool:
     evidence = _normalise(evidence_text)
     if not claim or not evidence:
         return False
-    evidence_facts = _extract_facts(evidence_text)
+    evidence_facts, evidence_ambiguous = _extract_facts_with_ambiguity(evidence_text)
     if _facts_have_material_contradiction(evidence_facts):
         return False
-    if claim in evidence:
-        return True
-    claim_facts = _extract_facts(claim_text)
-    return bool(claim_facts) and all(
-        fact in set(evidence_facts) for fact in claim_facts
-    )
+    claim_facts, claim_ambiguous = _extract_facts_with_ambiguity(claim_text)
+    if evidence_ambiguous or claim_ambiguous:
+        return False
+    if claim_facts:
+        return all(fact in set(evidence_facts) for fact in claim_facts)
+    return claim in evidence
 
 
 class DeterministicLexicalRetriever:

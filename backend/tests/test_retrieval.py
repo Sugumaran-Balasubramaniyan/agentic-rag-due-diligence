@@ -294,6 +294,64 @@ def test_valid_citations_report_full_precision_and_coverage() -> None:
     assert result.citation_coverage == 1.0
 
 
+def test_structured_claim_allows_unrelated_sentence_after_evidence_fact() -> None:
+    from due_diligence_copilot.retrieval import CitationVerifier, Claim
+
+    chunk = Chunk(
+        id="retrieved-with-context",
+        workspace_id="workspace-a",
+        document_id="doc-1",
+        ordinal=0,
+        text=(
+            "FY2025 revenue was EUR 10,000,000. "
+            "The board reviewed the operating schedule."
+        ),
+        content_hash="a" * 64,
+        block_id="block-1",
+        source_location={
+            "document_id": "doc-1",
+            "path": "financial.md",
+            "line_start": 1,
+        },
+    )
+    repository = InMemoryDocumentRepository()
+    repository.save(
+        "workspace-a",
+        DocumentRecord(
+            id="doc-1",
+            display_name="Financial Summary",
+            document_type=DocumentType.FINANCIAL_SUMMARY,
+            path="financial.md",
+            media_type="text/markdown",
+            sha256="b" * 64,
+            byte_length=1,
+        ),
+    )
+    citation = Evidence(
+        id="evidence-1",
+        document_id="doc-1",
+        display_name="Financial Summary",
+        source_location=chunk.source_location,
+        excerpt=chunk.text,
+        chunk_id=chunk.id,
+    )
+
+    result = CitationVerifier(repository).verify(
+        AUTHORIZED,
+        (
+            Claim(
+                id="claim-1",
+                text="FY2025 revenue was EUR 10,000,000.",
+                evidence=(citation,),
+            ),
+        ),
+        (RetrievalHit(chunk=chunk, score=1.0, rank=1),),
+    )
+
+    assert result.citation_precision == 1.0
+    assert result.citation_coverage == 1.0
+
+
 def test_unsupported_claim_abstains_with_typed_reason() -> None:
     from due_diligence_copilot.retrieval import (
         AbstentionReason,
@@ -1356,11 +1414,19 @@ def test_reranker_in_place_chunk_mutation_is_rejected() -> None:
 
 
 @pytest.mark.parametrize(
-    "conjunction",
-    (", but ", " and ", " or "),
+    "separator",
+    (
+        pytest.param(", ", id="standalone-comma"),
+        pytest.param("; ", id="semicolon"),
+        pytest.param(", but ", id="comma-but"),
+        pytest.param(", and ", id="comma-and"),
+        pytest.param(", or ", id="comma-or"),
+        pytest.param(" and ", id="and"),
+        pytest.param(" or ", id="or"),
+    ),
 )
 def test_exact_claim_substring_does_not_hide_contradictory_clause(
-    conjunction: str,
+    separator: str,
 ) -> None:
     from due_diligence_copilot.retrieval import (
         AbstentionReason,
@@ -1370,7 +1436,7 @@ def test_exact_claim_substring_does_not_hide_contradictory_clause(
     )
 
     claim_text = "The monitoring control is turned on"
-    text = claim_text + conjunction + "turned off."
+    text = claim_text + separator + "turned off."
     chunk = Chunk(
         id="control",
         workspace_id="workspace-a",
@@ -1421,3 +1487,52 @@ def test_exact_claim_substring_does_not_hide_contradictory_clause(
         )
 
     assert failure.value.reason == AbstentionReason.CONTRADICTORY_EVIDENCE
+
+
+def test_ambiguous_state_continuation_abstains_before_exact_support() -> None:
+    from due_diligence_copilot.retrieval import (
+        AbstentionReason,
+        CitationVerifier,
+        Claim,
+        RetrievalAbstention,
+    )
+
+    claim_text = "The monitoring control is turned on"
+    text = claim_text + ", unclear, turned on."
+    chunk = Chunk(
+        id="ambiguous-control",
+        workspace_id="workspace-a",
+        document_id="doc-1",
+        ordinal=0,
+        text=text,
+        content_hash="a" * 64,
+        block_id="block-ambiguous-control",
+        source_location={
+            "document_id": "doc-1",
+            "path": "controls.md",
+            "line_start": 1,
+        },
+    )
+    citation = Evidence(
+        id="evidence-ambiguous-control",
+        document_id="doc-1",
+        display_name="Controls",
+        source_location=chunk.source_location,
+        excerpt=text,
+        chunk_id=chunk.id,
+    )
+
+    with pytest.raises(RetrievalAbstention) as failure:
+        CitationVerifier().verify(
+            AUTHORIZED,
+            (
+                Claim(
+                    id="claim-ambiguous-control",
+                    text=claim_text,
+                    evidence=(citation,),
+                ),
+            ),
+            (RetrievalHit(chunk=chunk, score=1.0, rank=1),),
+        )
+
+    assert failure.value.reason == AbstentionReason.UNSUPPORTED_EVIDENCE

@@ -161,3 +161,21 @@
   pre-commit passed cleanly; `npm audit --audit-level=high` found 0
   vulnerabilities; diff check and filename-only secret scan found no issues.
 - Task 4 remains pending independent review. No push was performed.
+
+## Task 4 fix round 4/5 checkpoint
+
+- Fresh escalation repair on clean base `c844a9b` closes the standalone-comma
+  compound-evidence bypass. Structured clause extraction now handles standalone
+  commas through the same boundary path as semicolons and conjunctions, keeps
+  numeric separators intact, carries only structurally safe immediate state or
+  possession-polarity continuations, and fails closed on ambiguous continuations
+  before exact-substring support.
+- Added the literal `turned on, turned off` regression plus semicolon,
+  comma-`but`, comma-`and`, comma-`or`, and no-comma conjunction probes. The
+  focused Task 4 suite reports 36 passed; the full backend suite reports 96
+  passed. The seeded benchmark remains Recall@10 0.9643 and MRR@10 0.8095.
+- Fresh `make verify`, pinned pre-commit, frontend high-severity audit, diff
+  check, and filename-only secret scan passed. No live provider or database
+  integration is claimed.
+- Task 4 remains pending independent review and acceptance. This is a local
+  fix-round checkpoint only; no push was performed.

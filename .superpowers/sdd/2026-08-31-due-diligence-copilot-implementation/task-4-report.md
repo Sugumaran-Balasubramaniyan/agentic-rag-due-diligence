@@ -433,3 +433,150 @@ $ git ls-files -co --exclude-standard | rg -i '(^|/)(\.env$|.*(secret|credential
 ```
 
 Round-3 changes are ready for local commit only. No push was performed.
+
+## Task 4 fix round 4/5 evidence
+
+This round used a fresh escalation implementer on clean base `c844a9b`. No
+subagents were dispatched and no push was performed.
+
+Systematic debugging confirmed the remaining Critical root cause in the
+structured-clause path. `_extract_facts` split sentence punctuation,
+semicolons, and conjunctions, but not a standalone comma. Therefore the exact
+evidence `The monitoring control is turned on, turned off.` produced no
+structured facts, and contradiction assessment ran before exact-substring
+support but had nothing to assess. The exact positive claim was then accepted.
+
+The fix introduces a shared clause-boundary parser that handles standalone
+commas while preserving digit-adjacent numeric separators, audits semicolon and
+comma-plus-conjunction forms through one regression family, and carries only
+exact bare state or possession-polarity continuations from the immediately
+preceding compatible fact. Sentence boundaries do not carry state. Unparsed
+continuations mark the alignment ambiguous and fail closed before exact support;
+unrelated complete sentences after a supported fact remain valid context.
+
+Literal standalone-comma RED:
+
+```text
+$ uv run pytest -q tests/test_retrieval.py::test_exact_claim_substring_does_not_hide_contradictory_clause
+F......                                                                  [100%]
+=================================== FAILURES ===================================
+_ test_exact_claim_substring_does_not_hide_contradictory_clause[standalone-comma] _
+E       Failed: DID NOT RAISE <class 'due_diligence_copilot.retrieval.RetrievalAbstention'>
+```
+
+The direct pre-fix reproduction was:
+
+```text
+claim: (_Fact(subject='the monitoring control', predicate='state', value='turned on', polarity='affirmed'),)
+'The monitoring control is turned on, turned off.' facts= () supported= True
+```
+
+The ambiguity guard was also driven RED before its implementation:
+
+```text
+$ uv run pytest -q tests/test_retrieval.py::test_ambiguous_state_continuation_abstains_before_exact_support
+F                                                                        [100%]
+E       AssertionError: assert <AbstentionReason.MISSING_DOCUMENT_AUTHORITY: 'missing_document_authority'> == <AbstentionReason.UNSUPPORTED_EVIDENCE: 'unsupported_evidence'>
+```
+
+The final punctuation probes are GREEN:
+
+```text
+$ uv run pytest -q tests/test_retrieval.py::test_exact_claim_substring_does_not_hide_contradictory_clause
+.......                                                                  [100%]
+
+$ uv run pytest -q tests/test_retrieval.py::test_ambiguous_state_continuation_abstains_before_exact_support
+.                                                                        [100%]
+```
+
+The passing parser/alignment probes cover standalone comma, semicolon,
+comma-`but`, comma-`and`, comma-`or`, no-comma conjunctions, numeric comma
+preservation, elided possession polarity, sentence-boundary non-carry, and
+ambiguous-fragment rejection. Representative output:
+
+```text
+'The monitoring control is turned on, turned off.' facts= (_Fact(subject='the monitoring control', predicate='state', value='turned on', polarity='affirmed'), _Fact(subject='the monitoring control', predicate='state', value='turned off', polarity='affirmed')) supported= False
+'The monitoring control is turned on; turned off.' facts= (_Fact(subject='the monitoring control', predicate='state', value='turned on', polarity='affirmed'), _Fact(subject='the monitoring control', predicate='state', value='turned off', polarity='affirmed')) supported= False
+'The monitoring control is turned on, and turned off.' facts= (_Fact(subject='the monitoring control', predicate='state', value='turned on', polarity='affirmed'), _Fact(subject='the monitoring control', predicate='state', value='turned off', polarity='affirmed')) supported= False
+'Revenue was EUR 10,000,000.' facts= (_Fact(subject='', predicate='revenue', value='eur:10000000', polarity='affirmed'),) supported= True
+'Asteria has a security policy, has no security policy.' facts= (_Fact(subject='asteria', predicate='possession', value='security policy', polarity='affirmed'), _Fact(subject='asteria', predicate='possession', value='security policy', polarity='negated')) supported= False
+'The monitoring control is turned on. turned off.' facts= (_Fact(subject='the monitoring control', predicate='state', value='turned on', polarity='affirmed'),) supported= False
+```
+
+Focused Task 4 suite:
+
+```text
+$ uv run pytest tests/test_retrieval.py
+....................................                                     [100%]
+36 passed in 0.23s
+```
+
+Seeded benchmark:
+
+```text
+$ uv run python -c 'from due_diligence_copilot.adapters import InMemoryChunkIndex, InMemoryDocumentRepository, InMemoryObjectStore; from due_diligence_copilot.ingestion_contracts import AccessContext, UploadDocument; from due_diligence_copilot.ingestion_service import IngestionService; from due_diligence_copilot.retrieval import DeterministicLexicalRetriever, DeterministicVectorRetriever, HybridRetriever, evaluate_retrieval; from due_diligence_copilot.synthetic_data import build_manifest; manifest, sources = build_manifest(); context = AccessContext(principal_id="analyst", allowed_workspace_ids={"asteria"}, workspace_id="asteria"); index = InMemoryChunkIndex(); service = IngestionService(InMemoryObjectStore(), InMemoryDocumentRepository(), index); [service.ingest(context, UploadDocument(workspace_id="asteria", filename=source.path, media_type=source.media_type, content=source.content, document_type=source.document_type)) for source in sources]; evaluation = evaluate_retrieval(HybridRetriever(DeterministicLexicalRetriever(index), DeterministicVectorRetriever(index)), manifest, index.list("asteria"), context); print(f"questions={evaluation.question_count} recall_at_10={evaluation.recall_at_10:.4f} mrr_at_10={evaluation.mrr_at_10:.4f}")'
+questions=14 recall_at_10=0.9643 mrr_at_10=0.8095
+```
+
+Fresh repository gates:
+
+```text
+$ make verify
+cd backend && uv run ruff check .
+All checks passed!
+cd backend && uv run mypy src
+Success: no issues found in 17 source files
+cd backend && uv run pytest
+........................................................................ [ 75%]
+........................                                                 [100%]
+96 passed in 0.64s
+cd frontend && npm run lint
+cd frontend && npm run type-check
+cd frontend && npm test -- --run
+
+> due-diligence-copilot-frontend@0.1.0 test
+> vitest --run
+
+ RUN  v3.2.7 /home/ubuntu/agentic-rag-due-diligence/.worktrees/flagship-copilot/frontend
+
+ ✓ src/App.test.tsx (1 test) 98ms
+
+Test Files  1 passed (1)
+Tests  1 passed (1)
+ Start at  11:36:05
+ Duration  1.18s (transform 66ms, setup 92ms, collect 164ms, tests 98ms, environment 470ms, prepare 85ms)
+
+cd frontend && npm run build
+> due-diligence-copilot-frontend@0.1.0 build
+> tsc -b && vite build
+
+vite v7.3.6 building client environment for production...
+transforming...
+✓ 74 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.17 kB │ gzip:  0.15 kB
+dist/assets/index-CpyRbTNJ.css    0.16 kB │ gzip:  0.15 kB
+dist/assets/index-DpH50MtX.js   209.52 kB │ gzip: 65.59 kB
+✓ built in 1.47s
+
+$ uvx --from pre-commit==4.3.0 pre-commit run --all-files
+ruff (legacy alias)......................................................Passed
+ruff format..............................................................Passed
+prettier.................................................................Passed
+
+$ npm audit --audit-level=high
+found 0 vulnerabilities
+
+$ git diff --check
+[no output; exit 0]
+
+$ git ls-files -co --exclude-standard | rg -i '(^|/)(\.env$|.*(secret|credential|token|private.?key).*)'
+[no matching filenames]
+```
+
+The round-4 implementation preserves the earlier tenant/identity,
+abstention, reranker snapshot, citation, contradiction, and benchmark
+behavior. PostgreSQL/pgvector remain injected adapter boundaries only. Task 4
+remains pending independent review and acceptance; this round records local
+implementation and verification evidence only.
