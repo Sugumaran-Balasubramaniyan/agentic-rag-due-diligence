@@ -66,9 +66,7 @@ def test_contradiction_approval_rejects_a_tampered_same_id_citation() -> None:
         update={
             "analysis": result.analysis.model_copy(
                 update={
-                    "findings": (
-                        finding.model_copy(update={"evidence": [tampered]}),
-                    )
+                    "findings": (finding.model_copy(update={"evidence": [tampered]}),)
                 }
             )
         }
